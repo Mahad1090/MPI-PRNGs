@@ -1,15 +1,14 @@
 # Parallel Random Number Generation — CS-3006 Spring 2026
 
 > Demonstrating that counter-based PRNGs (Threefry, Philox) are superior to traditional PRNGs (Mersenne Twister) in parallel and distributed settings.
-
 ---
 
 ## Authors
 
 | Name | Role |
 |------|------|
-| Member 1 | [Your Name] |
-| Member 2 | [Partner's Name] |
+| Member 1 | [Mahad Malik] |
+| Member 2 | [Rayyan Imran] |
 
 ---
 

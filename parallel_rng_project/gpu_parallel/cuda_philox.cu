@@ -5,9 +5,8 @@
  *         Salmon et al., SC11, 2011
  * Course: CS-3006 Parallel and Distributed Computing
  * Purpose: GPU-accelerated counter-based PRNG using Philox-4x32-10.
- *          Each CUDA thread independently generates its random value
- *          using its global thread ID as the counter — zero warp divergence,
- *          perfect SIMT execution, fully coalesced memory writes.
+ *          Each CUDA thread independently performs Philox calls using its
+ *          global thread ID as the counter, storing all four generated words.
  * Compile: nvcc -O2 -std=c++17 -I../Random123/include -o cuda_philox cuda_philox.cu
  * Run:     ./cuda_philox [N]
  *          Example: ./cuda_philox 10000000
@@ -56,6 +55,7 @@ static constexpr long long DEFAULT_N          = 10'000'000LL;
 static constexpr int       BLOCK_SIZE         = 256;    // threads per block
 static constexpr int       NUM_WARMUP_RUNS    = 5;      // warm-up iterations
 static constexpr int       NUM_TIMED_RUNS     = 5;      // timed iterations
+static constexpr int       PHILOX_OUTPUT_WORDS = 4;     // Philox-4x32 returns 4 words
 static constexpr uint32_t  SHARED_KEY_WORD_0  = 0xDEAD'BEEFu; // fixed key
 static constexpr uint32_t  SHARED_KEY_WORD_1  = 0xCAFE'BABEu; // fixed key
 
@@ -81,7 +81,7 @@ static constexpr uint32_t  SHARED_KEY_WORD_1  = 0xCAFE'BABEu; // fixed key
 //
 // With Philox (Random123):
 //   1. No state initialization whatsoever
-//   2. Thread ID IS the counter — computation is immediate
+//   2. Thread ID maps to the Philox call counter — computation is immediate
 //   3. Key is a compile-time constant
 //   4. Zero global memory for state
 //   5. Better statistical quality (counter-based bijection vs. LFSR)
@@ -95,59 +95,52 @@ static constexpr uint32_t  SHARED_KEY_WORD_1  = 0xCAFE'BABEu; // fixed key
 // PDC Concept: SIMT (Single Instruction, Multiple Thread) execution
 // All threads execute the SAME instruction sequence (call philox4x32_10 with
 // the same key) — the ONLY difference is the counter value derived from the
-// thread ID. This is the definition of SIMT.
+// thread ID. Each Philox call produces four 32-bit output words.
 //
-// Why zero warp divergence:
-//   Warp divergence occurs when threads in the same warp take different
-//   branches (if/else, switch). Here there are NO branches — every thread
-//   follows the identical 10-round multiply path. The GPU scheduler never
-//   has to serialize divergent paths.
+// Branching:
+//   The main path is uniform. Only the final partial Philox call needs bounds
+//   checks when N is not divisible by four.
 //
 // Memory coalescing:
-//   Thread k writes to output_device_buffer[k]. Since consecutive threads
-//   (k, k+1, k+2, ...) write to consecutive 32-bit addresses, the memory
-//   controller can coalesce up to 32 thread writes into one 128-byte
-//   transaction — the maximum possible coalescing on NVIDIA GPUs.
+//   Thread k writes to output_device_buffer[4k..4k+3]. Consecutive threads
+//   still write consecutive 32-bit addresses, so warp writes remain coalesced.
 //
 // Counter-to-thread-ID mapping:
 //   global_thread_id = blockIdx.x * blockDim.x + threadIdx.x
-//   This maps each thread to a unique, deterministic counter value.
-//   Thread 0 → counter 0, Thread 1 → counter 1, etc.
+//   This maps each thread to a unique, deterministic Philox call counter.
+//   Thread 0 → counter 0 → outputs 0..3
+//   Thread 1 → counter 1 → outputs 4..7
 //   Any thread can compute ANY value independently without knowing
 //   what its neighbors computed.
 __global__ void philox_generate_kernel(
-    uint32_t* output_device_buffer,
+    uint32_t* __restrict__ output_device_buffer,
     long long total_numbers_to_generate,
     uint32_t  key_word_0,
     uint32_t  key_word_1)
 {
     // Compute this thread's unique global ID
     // PDC Concept: Thread indexing in a 1D grid
-    long long global_thread_id =
-        static_cast<long long>(blockIdx.x) * static_cast<long long>(blockDim.x) +
-        static_cast<long long>(threadIdx.x);
+    long long global_thread_id = static_cast<long long>(blockIdx.x) * static_cast<long long>(blockDim.x) + static_cast<long long>(threadIdx.x);
 
     // Grid-stride loop: handles N > num_threads cases
     // PDC Concept: Grid-stride loops allow a fixed-size kernel launch to
     // process arbitrarily large N without launching one thread per element.
-    long long grid_stride = static_cast<long long>(gridDim.x) *
-                            static_cast<long long>(blockDim.x);
+    long long grid_stride = static_cast<long long>(gridDim.x) * static_cast<long long>(blockDim.x);
+    long long total_philox_calls =
+        (total_numbers_to_generate + PHILOX_OUTPUT_WORDS - 1) / PHILOX_OUTPUT_WORDS;
 
-    for (long long counter_value = global_thread_id;
-         counter_value < total_numbers_to_generate;
-         counter_value += grid_stride)
-    {
-        // Build Philox key: constant across all threads (shared key)
-        // The key provides the "stream" identity — all GPU threads are
-        // in the same stream, distinguished only by their counter value.
-        philox4x32_key_t philox_key = {{key_word_0, key_word_1}};
+    // Build Philox key once per thread. The key identifies the random stream.
+    philox4x32_key_t philox_key = {{key_word_0, key_word_1}};
 
-        // Build Philox counter: thread ID = position in output sequence
+    for (long long philox_call_index = global_thread_id;
+         philox_call_index < total_philox_calls;
+         philox_call_index += grid_stride){
+        // Build Philox counter: call index = position in Philox block sequence
         // Using 64-bit counter split across two 32-bit words to support
         // N > 2^32 without counter collisions.
         philox4x32_ctr_t philox_counter = {{
-            static_cast<uint32_t>(counter_value & 0xFFFFFFFFULL),   // low 32 bits
-            static_cast<uint32_t>(counter_value >> 32),             // high 32 bits
+            static_cast<uint32_t>(philox_call_index & 0xFFFFFFFFULL),   // low 32 bits
+            static_cast<uint32_t>(philox_call_index >> 32),             // high 32 bits
             0u,
             0u
         }};
@@ -158,10 +151,25 @@ __global__ void philox_generate_kernel(
         philox4x32_ctr_t philox_output =
             philox4x32_10(philox_counter, philox_key);
 
-        // Write output word 0 to coalesced global memory location
-        // Coalescing: thread k writes to address k, so warp writes are
-        // to addresses [warp_base, warp_base+31] — a single L2 transaction.
-        output_device_buffer[counter_value] = philox_output.v[0];
+        long long base_output_index = philox_call_index * PHILOX_OUTPUT_WORDS;
+
+        // Fast path for complete 4-word blocks; tail path handles N % 4.
+        if (base_output_index + 3 < total_numbers_to_generate) {
+            output_device_buffer[base_output_index + 0] = philox_output.v[0];
+            output_device_buffer[base_output_index + 1] = philox_output.v[1];
+            output_device_buffer[base_output_index + 2] = philox_output.v[2];
+            output_device_buffer[base_output_index + 3] = philox_output.v[3];
+        } 
+        else {
+            if (base_output_index + 0 < total_numbers_to_generate)
+                output_device_buffer[base_output_index + 0] = philox_output.v[0];
+            if (base_output_index + 1 < total_numbers_to_generate)
+                output_device_buffer[base_output_index + 1] = philox_output.v[1];
+            if (base_output_index + 2 < total_numbers_to_generate)
+                output_device_buffer[base_output_index + 2] = philox_output.v[2];
+            if (base_output_index + 3 < total_numbers_to_generate)
+                output_device_buffer[base_output_index + 3] = philox_output.v[3];
+        }
     }
 }
 
@@ -264,10 +272,12 @@ int main(int argc, char* argv[])
     // ── Compute Grid Dimensions ───────────────────────────────────────────────
     // PDC Concept: Thread hierarchy — CUDA executes threads in blocks,
     // blocks in a grid. We choose BLOCK_SIZE=256 (common optimal value)
-    // and compute grid size to cover all N elements.
+    // and compute grid size to cover ceil(N / 4) Philox calls.
     int  threads_per_block = BLOCK_SIZE;
+    long long total_philox_calls =
+        (total_numbers_to_generate + PHILOX_OUTPUT_WORDS - 1) / PHILOX_OUTPUT_WORDS;
     long long num_blocks_raw =
-        (total_numbers_to_generate + threads_per_block - 1) / threads_per_block;
+        (total_philox_calls + threads_per_block - 1) / threads_per_block;
 
     // Cap grid size to device maximum to avoid launch errors
     int max_grid_dim = gpu_device_properties.maxGridSize[0];
@@ -279,6 +289,8 @@ int main(int argc, char* argv[])
 
     cout << "  N               : "
               << format_with_commas(total_numbers_to_generate) << "\n";
+    cout << "  Philox calls    : "
+              << format_with_commas(total_philox_calls) << "\n";
     cout << "  Threads / block : " << threads_per_block << "\n";
     cout << "  Grid blocks     : " << num_blocks << "\n";
     cout << "  Total threads   : "
