@@ -66,7 +66,7 @@ endif
         run run-baseline run-mpi-1 run-mpi-2 run-mpi-4 run-mpi-8 run-mpi-10 \
         run-mpi-multi-2 run-mpi-multi-4 run-mpi-multi-8 run-mpi-multi-16 run-mpi-multi-18 \
         run-gpu run-bw run-roof run-plots \
-        deploy deploy-mpi-runtime remote-compile sync-results hostfile run-remote clean clean-results help
+        deploy deploy-mpi-runtime remote-compile remote-bw sync-results hostfile run-remote clean clean-results help
 
 # ------------------------------------------------------------------------------
 all: compile
@@ -162,7 +162,7 @@ run-plots: | $(RESULTS_DIR)
 
 # Run all multi-node MPI experiments + hardware profiling + plots
 # Prerequisite: make deploy && make remote-compile
-run-remote: run-mpi-multi-2 run-mpi-multi-4 run-mpi-multi-8 run-mpi-multi-16 run-mpi-multi-18 run-bw run-roof run-plots
+run-remote: run-mpi-multi-2 run-mpi-multi-4 run-mpi-multi-8 run-mpi-multi-16 run-mpi-multi-18 remote-bw run-bw run-roof run-plots
 	@echo ""
 	@echo "  All remote experiments complete."
 	@echo "  Ranks distributed: localhost=$(LOCAL_SLOTS) slots, $(REMOTE_HOST)=$(REMOTE_SLOTS) slots"
@@ -288,6 +288,16 @@ remote-compile: deploy deploy-mpi-runtime
 sync-results:
 	scp $(REMOTE):$(REMOTE_DIR)/results/*.csv $(RESULTS_DIR)/ || true
 	@echo "  OK  results synced"
+
+# Profile the remote machine's hardware and pull back as hardware_profile_remote.csv
+remote-bw:
+	@echo "  Profiling hardware on $(REMOTE)..."
+	ssh $(REMOTE) "mkdir -p $(REMOTE_DIR)/hardware_profiling $(REMOTE_DIR)/results"
+	scp $(ROOT)/hardware_profiling/bandwidth_test.cpp $(REMOTE):$(REMOTE_DIR)/hardware_profiling/bandwidth_test.cpp
+	ssh $(REMOTE) "g++ -O2 -std=c++17 -o $(REMOTE_DIR)/hardware_profiling/bandwidth_test $(REMOTE_DIR)/hardware_profiling/bandwidth_test.cpp"
+	ssh $(REMOTE) "cd $(REMOTE_DIR) && ./hardware_profiling/bandwidth_test"
+	scp $(REMOTE):$(REMOTE_DIR)/results/hardware_profile.csv $(RESULTS_DIR)/hardware_profile_remote.csv
+	@echo "  OK  remote hardware profile → results/hardware_profile_remote.csv"
 
 # ------------------------------------------------------------------------------
 # CLEAN

@@ -271,6 +271,109 @@ static void print_summary_table(const BaselineResult&         baseline,
     output_stream << "╚══════════════════════════════════════════════════════════════════╝\n\n";
 }
 
+// ── Print Hardware Profiles Comparison ───────────────────────────────────────────
+static void print_hardware_profiles(const HardwareProfile& local_hw,
+                                     const HardwareProfile& remote_hw,
+                                     ostream&               output_stream)
+{
+    output_stream << "── Hardware Profiles ─────────────────────────────────────────────\n\n";
+
+    auto print_profile = [&](const string& label, const HardwareProfile& hw) {
+        output_stream << "  " << label << ":\n";
+        if (!hw.loaded) { output_stream << "    [no data]\n\n"; return; }
+        output_stream << "    Peak copy BW  : " << fixed << setprecision(2)
+                      << hw.peak_copy_bandwidth_GBps << " GB/s\n";
+        output_stream << "    Peak compute  : " << fixed << setprecision(2)
+                      << hw.peak_compute_GFLOPS << " GFLOPS\n";
+        output_stream << "    Ridge point   : " << fixed << setprecision(3)
+                      << hw.ridge_point << " FLOP/byte\n";
+        output_stream << "    Threefry bound: "
+                      << (hw.threefry_ai > hw.ridge_point ? "COMPUTE-BOUND" : "MEMORY-BOUND")
+                      << " (AI=" << fixed << setprecision(2) << hw.threefry_ai << ")\n\n";
+    };
+
+    print_profile("Local machine",  local_hw);
+    print_profile("Remote machine", remote_hw);
+}
+
+// ── Print Hardware Utilisation ─────────────────────────────────────────────────
+static void print_utilization_analysis(const BaselineResult&    baseline,
+                                        const vector<MpiResult>& mpi_results,
+                                        const HardwareProfile&   local_hw,
+                                        const HardwareProfile&   remote_hw,
+                                        ostream&                 output_stream)
+{
+    output_stream << "── Hardware Utilisation ──────────────────────────────────────────\n\n";
+
+    if (!local_hw.loaded) {
+        output_stream << "  [NO DATA] Run bandwidth_test first.\n\n";
+        return;
+    }
+
+    const double ai               = local_hw.threefry_ai;
+    const double local_ceil_GBps  = local_hw.peak_compute_GFLOPS / ai;
+    const bool   has_remote       = remote_hw.loaded;
+    const double remote_ceil_GBps = has_remote ? remote_hw.peak_compute_GFLOPS / ai : 0.0;
+
+    output_stream << "  Threefry AI = " << fixed << setprecision(2) << ai
+                  << " FLOP/byte  (COMPUTE-BOUND: ceiling = peak_GFLOPS / AI)\n";
+    output_stream << "    Local  ceiling per rank: " << fixed << setprecision(2)
+                  << local_hw.peak_compute_GFLOPS << " / " << ai
+                  << " = " << local_ceil_GBps << " GB/s\n";
+    if (has_remote)
+        output_stream << "    Remote ceiling per rank: " << fixed << setprecision(2)
+                      << remote_hw.peak_compute_GFLOPS << " / " << ai
+                      << " = " << remote_ceil_GBps << " GB/s\n";
+    output_stream << "\n";
+
+    const int wI = 22, wP = 4, wG = 9, wR = 9, wL = 9, wRmt = 9;
+    int total_w = wI + wP + wG + wR + wL + (has_remote ? wRmt : 0);
+    string sep(total_w, '-');
+
+    output_stream << "  " << left
+                  << setw(wI) << "Implementation"
+                  << setw(wP) << "P"
+                  << setw(wG) << "GB/s"
+                  << setw(wR) << "GB/s/rk"
+                  << setw(wL) << "%Local";
+    if (has_remote) output_stream << setw(wRmt) << "%Remote";
+    output_stream << "\n  " << sep << "\n";
+
+    auto util_row = [&](const string& label, int p, double gbps) {
+        double per_rank    = (p > 0) ? gbps / static_cast<double>(p) : 0.0;
+        double pct_local   = (local_ceil_GBps  > 0) ? (per_rank / local_ceil_GBps)  * 100.0 : 0.0;
+        double pct_remote  = (has_remote && remote_ceil_GBps > 0)
+                             ? (per_rank / remote_ceil_GBps) * 100.0 : 0.0;
+        ostringstream sg, sr, pl, pr;
+        sg << fixed << setprecision(2) << gbps;
+        sr << fixed << setprecision(2) << per_rank;
+        pl << fixed << setprecision(1) << pct_local  << "%";
+        if (has_remote) pr << fixed << setprecision(1) << pct_remote << "%";
+        output_stream << "  " << left
+                      << setw(wI) << label
+                      << setw(wP) << p
+                      << setw(wG) << sg.str()
+                      << setw(wR) << sr.str()
+                      << setw(wL) << pl.str();
+        if (has_remote) output_stream << setw(wRmt) << pr.str();
+        output_stream << "\n";
+    };
+
+    if (baseline.loaded) util_row("Single Core TF", 1, baseline.throughput_GBps);
+    for (const auto& m : mpi_results) {
+        string lbl = "MPI " + to_string(m.num_processes) +
+                     (m.num_processes == 1 ? " process" : " processes");
+        util_row(lbl, m.num_processes, m.throughput_GBps);
+    }
+
+    output_stream << "  " << sep << "\n\n";
+    output_stream << "  GB/s/rk = total throughput / process count (per-rank throughput).\n";
+    output_stream << "  %Local  = (GB/s/rk × AI) / local peak_compute × 100.\n";
+    if (has_remote)
+        output_stream << "  %Remote = same formula using remote machine peak_compute.\n";
+    output_stream << "  Multi-node MPI rows span both machines; per-rank % is approximate.\n\n";
+}
+
 // ── Print Roofline Analysis ────────────────────────────────────────────────────
 static void print_roofline_analysis(const HardwareProfile& hw,
                                      ostream&                output_stream)
@@ -380,10 +483,11 @@ int main()
     cout << "==========================================================\n\n";
 
     // ── Read All Result CSV Files ─────────────────────────────────────────────
-    BaselineResult         baseline   = read_baseline_csv("results/baseline_results.csv");
-    vector<MpiResult> mpi_rows   = read_mpi_csv("results/mpi_results.csv");
-    GpuResult              gpu_result = read_gpu_csv("results/gpu_results.csv");
-    HardwareProfile        hw_profile = read_hardware_profile_csv("results/hardware_profile.csv");
+    BaselineResult         baseline      = read_baseline_csv("results/baseline_results.csv");
+    vector<MpiResult>      mpi_rows      = read_mpi_csv("results/mpi_results.csv");
+    GpuResult              gpu_result    = read_gpu_csv("results/gpu_results.csv");
+    HardwareProfile        hw_local      = read_hardware_profile_csv("results/hardware_profile.csv");
+    HardwareProfile        hw_remote     = read_hardware_profile_csv("results/hardware_profile_remote.csv");
 
     // Sort MPI results by process count for ordered table display
     sort(mpi_rows.begin(), mpi_rows.end(),
@@ -392,8 +496,10 @@ int main()
         });
 
     // ── Print to Terminal ─────────────────────────────────────────────────────
-    print_summary_table (baseline, mpi_rows, gpu_result, cout);
-    print_roofline_analysis(hw_profile, cout);
+    print_summary_table(baseline, mpi_rows, gpu_result, cout);
+    print_hardware_profiles(hw_local, hw_remote, cout);
+    print_utilization_analysis(baseline, mpi_rows, hw_local, hw_remote, cout);
+    print_roofline_analysis(hw_local, cout);
     print_scaling_analysis(mpi_rows, cout);
 
     // ── Save Full Analysis to Text File ───────────────────────────────────────
@@ -421,9 +527,11 @@ int main()
     report_file << "    2. GPU acceleration using Philox-4x32-10 via CUDA\n";
     report_file << "  Speedup numbers show improvement over the single-core Threefry baseline.\n\n";
 
-    print_summary_table   (baseline, mpi_rows, gpu_result, report_file);
-    print_roofline_analysis(hw_profile, report_file);
-    print_scaling_analysis (mpi_rows, report_file);
+    print_summary_table        (baseline, mpi_rows, gpu_result, report_file);
+    print_hardware_profiles    (hw_local, hw_remote, report_file);
+    print_utilization_analysis (baseline, mpi_rows, hw_local, hw_remote, report_file);
+    print_roofline_analysis    (hw_local, report_file);
+    print_scaling_analysis     (mpi_rows, report_file);
 
     report_file << "── Key Conclusions ──────────────────────────────────────────────\n\n";
     report_file << "  1. Counter-based PRNGs (Threefry, Philox) are embarrassingly\n";

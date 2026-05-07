@@ -55,6 +55,63 @@
 ║ GPU Philox Parallel│ (no data)  │          │        │           ║
 ╚══════════════════════════════════════════════════════════════════╝
 
+── Hardware Profiles ─────────────────────────────────────────────
+
+  Local machine:
+    Peak copy BW  : 9.89 GB/s
+    Peak compute  : 5.76 GFLOPS
+    Ridge point   : 0.582 FLOP/byte
+    Threefry bound: COMPUTE-BOUND (AI=2.50)
+
+  Remote machine:
+    [no data]
+
+── Hardware Utilisation ──────────────────────────────────────────
+
+  Threefry AI = 2.50 FLOP/byte  (COMPUTE-BOUND: ceiling = peak_GFLOPS / AI)
+    Local  ceiling per rank: 5.76 / 2.50 = 2.30 GB/s
+
+  Implementation        P   GB/s     GB/s/rk  %Local   
+  -----------------------------------------------------
+  Single Core TF        1   1.52     1.52     66.2%    
+  MPI 1 process         1   1.62     1.62     70.4%    
+  MPI 1 process         1   1.84     1.84     80.1%    
+  MPI 1 process         1   1.86     1.86     80.6%    
+  MPI 2 processes       2   2.22     1.11     48.2%    
+  MPI 2 processes       2   3.75     1.87     81.4%    
+  MPI 2 processes       2   3.69     1.85     80.1%    
+  MPI 2 processes       2   3.69     1.85     80.2%    
+  MPI 2 processes       2   3.74     1.87     81.2%    
+  MPI 2 processes       2   3.41     1.71     74.2%    
+  MPI 2 processes       2   3.32     1.66     72.1%    
+  MPI 2 processes       2   3.13     1.56     67.9%    
+  MPI 4 processes       4   3.07     0.77     33.3%    
+  MPI 4 processes       4   7.39     1.85     80.2%    
+  MPI 4 processes       4   2.84     0.71     30.8%    
+  MPI 4 processes       4   2.45     0.61     26.6%    
+  MPI 4 processes       4   7.42     1.85     80.5%    
+  MPI 4 processes       4   7.41     1.85     80.4%    
+  MPI 8 processes       8   4.98     0.62     27.0%    
+  MPI 8 processes       8   10.23    1.28     55.5%    
+  MPI 8 processes       8   9.94     1.24     53.9%    
+  MPI 8 processes       8   5.23     0.65     28.4%    
+  MPI 8 processes       8   10.52    1.31     57.1%    
+  MPI 8 processes       8   4.16     0.52     22.6%    
+  MPI 10 processes      10  5.84     0.58     25.4%    
+  MPI 10 processes      10  5.82     0.58     25.3%    
+  MPI 10 processes      10  3.91     0.39     17.0%    
+  MPI 16 processes      16  10.35    0.65     28.1%    
+  MPI 16 processes      16  7.67     0.48     20.8%    
+  MPI 16 processes      16  7.58     0.47     20.6%    
+  MPI 18 processes      18  11.90    0.66     28.7%    
+  MPI 18 processes      18  11.95    0.66     28.8%    
+  MPI 18 processes      18  13.33    0.74     32.2%    
+  -----------------------------------------------------
+
+  GB/s/rk = total throughput / process count (per-rank throughput).
+  %Local  = (GB/s/rk × AI) / local peak_compute × 100.
+  Multi-node MPI rows span both machines; per-rank % is approximate.
+
 ── Roofline Analysis ─────────────────────────────────────────────
 
   Peak memory bandwidth (STREAM copy) : 9.89 GB/s
