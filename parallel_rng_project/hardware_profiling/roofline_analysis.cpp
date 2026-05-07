@@ -46,14 +46,15 @@ struct MpiResult {
 };
 
 struct GpuResult {
-    long long total_N               = 0;
-    long long num_threads           = 0;
-    double    gpu_time_ms           = 0.0;
-    double    gpu_throughput_GBps   = 0.0;
-    double    cpu_time_ms           = 0.0;
-    double    cpu_throughput_GBps   = 0.0;
-    double    speedup               = 0.0;
-    bool      loaded                = false;
+    long long total_N                       = 0;
+    long long num_threads                   = 0;
+    double    gpu_baseline_time_ms          = 0.0;
+    double    gpu_baseline_throughput_GBps  = 0.0;
+    double    gpu_parallel_time_ms          = 0.0;
+    double    gpu_parallel_throughput_GBps  = 0.0;
+    double    speedup                       = 0.0;  // gpu_speedup_vs_single_thread
+    double    cpu_throughput_GBps           = 0.0;
+    bool      loaded                        = false;
 };
 
 struct HardwareProfile {
@@ -63,7 +64,7 @@ struct HardwareProfile {
     double peak_compute_GFLOPS        = 0.0;
     double ridge_point                = 0.0;
     double threefry_ai                = 2.5;
-    double mt_ai                      = 0.0024;
+    double philox_ai                  = 1.0;
     bool   loaded                     = false;
 };
 
@@ -146,13 +147,14 @@ static GpuResult read_gpu_csv(const string& file_path) {
     istringstream stream(data_line);
     string token;
     try {
-        getline(stream, token, ','); result.total_N             = stoll(token);
-        getline(stream, token, ','); result.num_threads         = stoll(token);
-        getline(stream, token, ','); result.gpu_time_ms         = stod(token);
-        getline(stream, token, ','); result.gpu_throughput_GBps = stod(token);
-        getline(stream, token, ','); result.cpu_time_ms         = stod(token);
-        getline(stream, token, ','); result.cpu_throughput_GBps = stod(token);
-        getline(stream, token, ','); result.speedup             = stod(token);
+        getline(stream, token, ','); result.total_N                      = stoll(token);
+        getline(stream, token, ','); result.gpu_baseline_time_ms         = stod(token);
+        getline(stream, token, ','); result.gpu_baseline_throughput_GBps = stod(token);
+        getline(stream, token, ','); result.gpu_parallel_time_ms         = stod(token);
+        getline(stream, token, ','); result.gpu_parallel_throughput_GBps = stod(token);
+        getline(stream, token, ','); result.speedup                      = stod(token);
+        getline(stream, token, ','); result.cpu_throughput_GBps          = stod(token);
+        getline(stream, token, ','); result.num_threads                  = stoll(token);
         result.loaded = true;
     } catch (...) {
         cerr << "[WARNING] Failed to parse " << file_path << "\n";
@@ -189,7 +191,7 @@ static HardwareProfile read_hardware_profile_csv(const string& file_path) {
         else if (metric_name == "peak_compute")             profile.peak_compute_GFLOPS       = value;
         else if (metric_name == "ridge_point")              profile.ridge_point               = value;
         else if (metric_name == "threefry_arithmetic_intensity") profile.threefry_ai           = value;
-        else if (metric_name == "mt_arithmetic_intensity")  profile.mt_ai                     = value;
+        else if (metric_name == "philox_arithmetic_intensity")  profile.philox_ai               = value;
     }
     profile.loaded = (profile.peak_copy_bandwidth_GBps > 0.0);
     return profile;
@@ -239,11 +241,11 @@ static void print_summary_table(const BaselineResult&         baseline,
     };
 
     if (baseline.loaded)
-        print_row("Sequential MT",
+        print_row("Single Core TF",
                   baseline.total_N, baseline.time_seconds,
                   baseline.throughput_GBps, 1.0);
     else
-        output_stream << "║ Sequential MT       │ (no data)  │          │        │           ║\n";
+        output_stream << "║ Single Core TF     │ (no data)  │          │        │           ║\n";
 
     for (const auto& mpi : mpi_results) {
         string label = "MPI " + to_string(mpi.num_processes) +
@@ -253,16 +255,17 @@ static void print_summary_table(const BaselineResult&         baseline,
     }
 
     if (gpu_result.loaded) {
-        double gpu_time_s = gpu_result.gpu_time_ms / 1000.0;
-        double gpu_speedup =
-            baseline.loaded
-                ? baseline.time_seconds / gpu_time_s
-                : gpu_result.speedup;
-        print_row("GPU Philox",
-                  gpu_result.total_N, gpu_time_s,
-                  gpu_result.gpu_throughput_GBps, gpu_speedup);
+        print_row("GPU Philox 1T",
+                  gpu_result.total_N,
+                  gpu_result.gpu_baseline_time_ms / 1000.0,
+                  gpu_result.gpu_baseline_throughput_GBps, 1.0);
+        print_row("GPU Philox Parallel",
+                  gpu_result.total_N,
+                  gpu_result.gpu_parallel_time_ms / 1000.0,
+                  gpu_result.gpu_parallel_throughput_GBps, gpu_result.speedup);
     } else {
-        output_stream << "║ GPU Philox         │ (no data)  │          │        │           ║\n";
+        output_stream << "║ GPU Philox 1T      │ (no data)  │          │        │           ║\n";
+        output_stream << "║ GPU Philox Parallel│ (no data)  │          │        │           ║\n";
     }
 
     output_stream << "╚══════════════════════════════════════════════════════════════════╝\n\n";
@@ -289,29 +292,37 @@ static void print_roofline_analysis(const HardwareProfile& hw,
                   << fixed << setprecision(3)
                   << hw.ridge_point << " FLOP/byte\n\n";
 
-    output_stream << "  Threefry-4x64-20:\n";
+    output_stream << "  Single Core Threefry-4x64-20 (Authors Baseline):\n";
     output_stream << "    Arithmetic Intensity  = "
                   << fixed << setprecision(2)
                   << hw.threefry_ai << " FLOP/byte\n";
     if (hw.threefry_ai > hw.ridge_point) {
         output_stream << "    Status: COMPUTE-BOUND (AI > ridge point)\n";
-        output_stream << "    → Scales linearly with core count (ideal for MPI parallelism).\n";
-        output_stream << "    → Adding more CPU cores improves throughput proportionally.\n";
+        output_stream << "    → Threefry is limited by CPU throughput, not memory bandwidth.\n";
+        output_stream << "    → Adding more MPI processes increases throughput proportionally.\n";
+        output_stream << "    → This is why near-linear MPI speedup is expected.\n";
     } else {
         output_stream << "    Status: MEMORY-BOUND (AI < ridge point)\n";
         output_stream << "    → Approaches peak memory bandwidth ceiling.\n";
-        output_stream << "    → Still far superior to MT due to zero state overhead.\n";
+        output_stream << "    → Stateless design still gives superior parallel scaling.\n";
     }
     output_stream << "\n";
 
-    output_stream << "  Mersenne Twister:\n";
+    output_stream << "  MPI Threefry (Our CPU Contribution):\n";
     output_stream << "    Arithmetic Intensity  = "
-                  << fixed << setprecision(6)
-                  << hw.mt_ai << " FLOP/byte\n";
-    output_stream << "    Status: SEVERELY MEMORY-BOUND (AI << ridge point)\n";
-    output_stream << "    → 2496-byte state causes L1/L2 cache pressure with multiple threads.\n";
-    output_stream << "    → Each additional thread competes for the same cache lines.\n";
-    output_stream << "    → Parallel speedup is minimal and degrades under load.\n\n";
+                  << fixed << setprecision(2)
+                  << hw.threefry_ai << " FLOP/byte (same as single core)\n";
+    output_stream << "    MPI adds negligible overhead (one MPI_Reduce of P doubles).\n";
+    output_stream << "    → Each rank independently runs Threefry with zero inter-rank comms.\n";
+    output_stream << "    → Embarrassingly parallel — near-linear speedup with process count.\n\n";
+
+    output_stream << "  GPU Philox-4x32-10 (Our GPU Contribution):\n";
+    output_stream << "    Arithmetic Intensity  = "
+                  << fixed << setprecision(2)
+                  << hw.philox_ai << " FLOP/byte\n";
+    output_stream << "    Status: MEMORY-BOUND on CPU roof, but GPU has far higher BW.\n";
+    output_stream << "    → Philox 32-bit multiply is a native single-cycle GPU operation.\n";
+    output_stream << "    → Thousands of CUDA threads saturate GPU memory bandwidth.\n\n";
 }
 
 // ── Print Scaling Analysis ────────────────────────────────────────────────────
@@ -403,6 +414,12 @@ int main()
     report_file << "  Paper: Salmon et al. SC11 2011\n";
     report_file << "  Course: CS-3006 Parallel and Distributed Computing\n";
     report_file << "==========================================================\n\n";
+    report_file << "  Baseline: Single Core Threefry-4x64-20\n";
+    report_file << "  (Authors' implementation from Random123 library)\n";
+    report_file << "  Our contributions:\n";
+    report_file << "    1. MPI parallelization of Threefry across multiple CPU processes\n";
+    report_file << "    2. GPU acceleration using Philox-4x32-10 via CUDA\n";
+    report_file << "  Speedup numbers show improvement over the single-core Threefry baseline.\n\n";
 
     print_summary_table   (baseline, mpi_rows, gpu_result, report_file);
     print_roofline_analysis(hw_profile, report_file);
@@ -412,9 +429,9 @@ int main()
     report_file << "  1. Counter-based PRNGs (Threefry, Philox) are embarrassingly\n";
     report_file << "     parallel — each rank/thread independently computes its\n";
     report_file << "     output from (key, counter) with zero communication.\n\n";
-    report_file << "  2. Mersenne Twister cannot be parallelized efficiently because\n";
-    report_file << "     its 2496-byte state creates cache pressure at scale and\n";
-    report_file << "     sequential dependency prevents skip-ahead.\n\n";
+    report_file << "  2. Single Core Threefry is the correct baseline — it is the\n";
+    report_file << "     authors' own implementation. MPI and GPU speedups measure\n";
+    report_file << "     pure parallelization benefit, not algorithm differences.\n\n";
     report_file << "  3. Philox is optimal for GPU because it uses 32-bit multiply,\n";
     report_file << "     which maps perfectly to GPU hardware units with zero\n";
     report_file << "     warp divergence (all threads execute identical instructions).\n\n";

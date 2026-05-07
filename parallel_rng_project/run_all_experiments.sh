@@ -93,7 +93,7 @@ echo ""
 echo -e "${BOLD}╔══════════════════════════════════════════════════════════╗${RESET}"
 echo -e "${BOLD}║   Parallel Random Number Generation — CS-3006 SP 2026    ║${RESET}"
 echo -e "${BOLD}║   Paper: Salmon et al., SC11 2011                        ║${RESET}"
-echo -e "${BOLD}║   Implementations: MT (baseline) | Threefry MPI | Philox ║${RESET}"
+echo -e "${BOLD}║   Baseline: Single Core Threefry | MPI Threefry | Philox GPU  ║${RESET}"
 echo -e "${BOLD}╚══════════════════════════════════════════════════════════╝${RESET}"
 echo ""
 echo "  Log file: ${LOG_FILE}"
@@ -150,15 +150,16 @@ section "STEP 2 — Compilation"
 # Disable set -e during compilation so one failure does not abort everything
 set +e
 
-echo "  Compiling baseline/sequential_mt.cpp..."
+echo "  Compiling baseline/sequential_threefry.cpp..."
 g++ -O2 -std=c++17 \
-    -o "${SCRIPT_DIR}/baseline/baseline" \
-    "${SCRIPT_DIR}/baseline/sequential_mt.cpp"
+    -I"${RANDOM123_INCLUDE}" \
+    -o "${SCRIPT_DIR}/baseline/sequential_threefry" \
+    "${SCRIPT_DIR}/baseline/sequential_threefry.cpp"
 if [ $? -eq 0 ]; then
-    done_msg "baseline/sequential_mt.cpp"
+    done_msg "baseline/sequential_threefry.cpp"
     COMPILE_BASELINE=true
 else
-    fail_msg "baseline/sequential_mt.cpp"
+    fail_msg "baseline/sequential_threefry.cpp"
     COMPILE_BASELINE=false
 fi
 
@@ -228,14 +229,14 @@ cd "${SCRIPT_DIR}"
 # Disable set -e so a failed experiment does not abort the rest
 set +e
 
-# --- 3.1 Sequential Baseline ---
+# --- 3.1 Sequential Baseline (Authors Implementation) ---
 if [ "${COMPILE_BASELINE}" = true ]; then
-    section "Experiment 1/8 — Sequential Mersenne Twister Baseline"
-    run_step "Sequential MT baseline" \
-        "${SCRIPT_DIR}/baseline/baseline" "${N}"
+    section "Experiment 1/8 — Single Core Threefry Baseline (Authors Implementation)"
+    run_step "Single Core Threefry baseline" \
+        "${SCRIPT_DIR}/baseline/sequential_threefry" "${N}"
 else
     warn_msg "Skipping baseline (compilation failed)."
-    fail "Sequential MT baseline"
+    fail "Single Core Threefry baseline"
 fi
 
 # --- 3.2 MPI Experiments ---

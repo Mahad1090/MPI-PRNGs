@@ -73,6 +73,18 @@ static constexpr uint64_t  DEFAULT_SEED = 42ULL;
 // random value) is applied to different data (different counter values
 // on different ranks) simultaneously.
 
+// ── Correct Baseline for This Project ───────────────────────────────────────
+//
+// The baseline is SINGLE CORE THREEFRY from baseline/sequential_threefry.cpp,
+// NOT Mersenne Twister. Mersenne Twister is only background motivation in
+// comments and the report. It is NOT used for speedup calculations.
+//
+// This file (Step 2) measures the PARALLELIZATION benefit:
+//   Same algorithm (Threefry-4x64-20), more processes = our MPI contribution.
+//   Speedup = single_core_threefry_time / mpi_wall_clock_time
+//   This isolates the MPI parallelization effect clearly.
+//   No algorithm differences contaminate the measurement.
+
 // ── Multistream vs Substream Distinction ──────────────────────────────────────
 //
 // MULTISTREAM APPROACH (what we use here):
@@ -105,7 +117,8 @@ static string format_with_commas(long long value) {
 }
 
 // ── Helper: Read Baseline Time from CSV ──────────────────────────────────────
-// Reads results/baseline_results.csv and returns the baseline time in seconds.
+// Reads results/baseline_results.csv (single core Threefry baseline) and
+// returns the baseline time in seconds.
 // Returns -1.0 if the file cannot be read (speedup will be shown as N/A).
 static double read_baseline_time_seconds(const string& csv_path) {
     ifstream csv_input_file(csv_path);

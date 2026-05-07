@@ -1,6 +1,6 @@
 # Parallel Random Number Generation — CS-3006 Spring 2026
 
-> Demonstrating that counter-based PRNGs (Threefry, Philox) are superior to traditional PRNGs (Mersenne Twister) in parallel and distributed settings.
+> Demonstrating the parallel scaling benefits of the authors' counter-based PRNGs (Threefry, Philox) from the Random123 library, using a single-core Threefry baseline as the reference point.
 ---
 
 ## Authors
@@ -41,9 +41,9 @@
 
 This project implements and benchmarks three paradigms for generating random numbers in parallel computing:
 
-1. **Sequential Baseline** — `std::mt19937_64` (Mersenne Twister), the standard sequential PRNG, used as the reference.
-2. **CPU Parallel** — Threefry-4x64-20 (Random123) across multiple MPI processes, demonstrating embarrassingly parallel scaling.
-3. **GPU Parallel** — Philox-4x32-10 (Random123) on NVIDIA GPU via CUDA, demonstrating massive SIMT parallelism.
+1. **Sequential Baseline** — Single-core Threefry-4x64-20 (Random123), the **authors' own implementation**, used as the reference point. This is what the paper provides as its starting point.
+2. **CPU Parallel** — Same Threefry-4x64-20 wrapped with MPI across multiple processes. Speedup measured against the single-core Threefry baseline. This demonstrates our MPI parallelization contribution.
+3. **GPU Parallel** — Philox-4x32-10 (Random123) on NVIDIA GPU via CUDA. Speedup measured against the single-core Threefry baseline. This demonstrates our GPU acceleration contribution.
 4. **Hardware Profiling** — Measures memory bandwidth and compute throughput, placing each algorithm on the Roofline Model.
 
 ### Why Counter-Based PRNGs Are Better for Parallel Computing
@@ -93,7 +93,7 @@ Both come from the [Random123](https://github.com/DEShawResearch/random123) head
 ```
 parallel_rng_project/
 ├── baseline/
-│   └── sequential_mt.cpp          # Mersenne Twister sequential baseline
+│   └── sequential_threefry.cpp    # Single-core Threefry-4x64-20 (authors baseline)
 ├── cpu_parallel/
 │   └── mpi_threefry.cpp           # MPI + Threefry-4x64-20
 ├── gpu_parallel/
@@ -179,7 +179,7 @@ Run from the `parallel_rng_project/` directory.
 
 ```bash
 cd baseline
-g++ -O2 -std=c++17 -o baseline sequential_mt.cpp
+g++ -O2 -std=c++17 -I../random123/include -o sequential_threefry sequential_threefry.cpp
 cd ..
 ```
 
@@ -222,10 +222,10 @@ cd ..
 Run experiments **in this exact order** from the `parallel_rng_project/` directory.
 Results of earlier experiments are read by later ones (e.g., MPI reads baseline CSV for speedup).
 
-### Step 1 — Sequential Baseline
+### Step 1 — Sequential Baseline (Authors Implementation)
 
 ```bash
-cd baseline && ./baseline 10000000 && cd ..
+cd baseline && ./sequential_threefry 10000000 && cd ..
 ```
 
 ### Step 2 — MPI Experiments
@@ -274,17 +274,18 @@ chmod +x run_all_experiments.sh
 
 ## Expected Output
 
-### Sequential Baseline
+### Single Core Threefry Baseline
 
 ```
 ┌─────────────────────────────────────────────────┐
-│       Sequential Mersenne Twister Results       │
+│   Single Core Threefry-4x64-20 Results          │
+│   (Authors Baseline — Random123 Library)         │
 ├─────────────────────────────────────────────────┤
 │  N generated  : 10,000,000                      │
 │  Timing runs  : 5                               │
-│  Avg time     : 0.0854 seconds                  │
-│  Throughput   : 0.9356 GB/s                     │
-│  Speedup      : 1.00x (baseline)                │
+│  Avg time     : 0.0420 seconds                  │
+│  Throughput   : 1.905 GB/s                      │
+│  Speedup      : 1.00x (authors baseline)        │
 └─────────────────────────────────────────────────┘
 ```
 
@@ -315,7 +316,7 @@ chmod +x run_all_experiments.sh
 │  N generated    : 10,000,000                         │
 │  GPU avg time   : 2.50000 ms                         │
 │  GPU throughput : 16.000 GB/s                        │
-│  GPU speedup    : 18.5x vs CPU MT                    │
+│  GPU speedup    : 18.5x vs Single Core Threefry      │
 └──────────────────────────────────────────────────────┘
 ```
 
@@ -325,8 +326,9 @@ chmod +x run_all_experiments.sh
 
 ### Speedup Numbers
 
-- **Speedup = baseline_time / parallel_time**
-- Speedup of `4.0x` with 4 processes = perfect linear scaling.
+- **Speedup = single_core_threefry_time / parallel_time**
+- All speedup numbers are relative to the single-core Threefry baseline.
+- Speedup of `4.0x` with 4 MPI processes = perfect linear scaling.
 - Speedup > process count = super-linear (rare, usually cache effects).
 - Speedup < process count = overhead from synchronization or load imbalance.
 
@@ -348,24 +350,24 @@ The roofline model (Plot 5) shows:
 
 | Algorithm | Arithmetic Intensity | Classification |
 |-----------|---------------------|----------------|
-| Threefry-4x64-20 | 2.5 FLOP/byte | Compute-bound (on most CPUs) |
-| Philox-4x32-10 | ~1.25 FLOP/byte | Near ridge point |
-| Mersenne Twister | ~0.0024 FLOP/byte | Severely memory-bound |
+| Single Core Threefry-4x64-20 | 2.5 FLOP/byte | Compute-bound (on most CPUs) |
+| MPI Threefry | 2.5 FLOP/byte | Same as single core (MPI adds negligible overhead) |
+| GPU Philox-4x32-10 | 1.0 FLOP/byte | Near ridge point (GPU bandwidth compensates) |
 
 ### Compute-Bound vs Memory-Bound
 
 - **Compute-bound**: Adding more cores improves performance linearly (great for MPI scaling).
 - **Memory-bound**: Adding more cores fights over the same memory bus (limited scaling).
 
-Threefry sits in the compute-bound regime → it scales near-linearly with MPI process count. Mersenne Twister sits deep in the memory-bound regime → scaling it gives minimal benefit.
+Threefry sits in the compute-bound regime → it scales near-linearly with MPI process count. MPI adds arithmetic intensity while keeping the same AI, so throughput increases proportionally with process count.
 
 ### Why Threefry Scales (Embarrassingly Parallel)
 
 Each MPI rank uses its rank number as a unique cryptographic key. Because the bijection is a pure function of (key, counter), **no rank needs data from any other rank during generation**. The parallel fraction approaches 100%, meaning Amdahl's Law predicts near-linear speedup.
 
-### Why Mersenne Twister Does Not Scale
+### Role of Mersenne Twister in This Project
 
-MT's sequential state dependency means rank k cannot begin until rank k-1 has finished updating the shared state. Even with separate per-thread generators, the 2496-byte state per thread causes L1/L2 cache overflow at 8+ threads, degrading performance.
+Mersenne Twister is **NOT** used as a baseline in our experiments. It is mentioned only as background context to explain why counter-based PRNGs were needed. The paper shows MT fails BigCrush statistical tests and cannot be parallelized effectively (2496-byte sequential state, no skip-ahead). Our project focuses on demonstrating the parallel scaling benefits of the authors' counter-based approach.
 
 ---
 

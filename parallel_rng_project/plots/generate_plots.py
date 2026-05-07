@@ -182,7 +182,7 @@ if has_any_data:
         baseline_gbps = df_baseline["throughput_GBps"].values
         ax.semilogx(baseline_N, baseline_gbps,
                     color="tomato", marker="o",
-                    label="Sequential Mersenne Twister")
+                    label="Single Core Threefry (Baseline)")
 
     if df_mpi is not None:
         # Use the best (highest throughput) MPI run for each N
@@ -194,9 +194,13 @@ if has_any_data:
                     label="MPI Threefry (best process count)")
 
     if df_gpu is not None:
-        ax.semilogx(df_gpu["N"].values, df_gpu["gpu_throughput_GBps"].values,
+        ax.semilogx(df_gpu["N"].values, df_gpu["gpu_parallel_throughput_GBps"].values,
                     color="mediumseagreen", marker="^",
-                    label="GPU Philox CUDA")
+                    label="GPU Philox Parallel (CUDA)")
+        if "gpu_baseline_throughput_GBps" in df_gpu.columns:
+            ax.semilogx(df_gpu["N"].values, df_gpu["gpu_baseline_throughput_GBps"].values,
+                        color="mediumseagreen", marker="v", linestyle=":",
+                        label="GPU Baseline (1 thread)")
 
     ax.set_title("Throughput vs Input Size N")
     ax.set_xlabel("Input Size N (log scale)")
@@ -214,12 +218,12 @@ else:
 # ─────────────────────────────────────────────────────────────────────────────
 # PLOT 4: CPU MPI vs GPU Throughput (grouped bar chart)
 # ─────────────────────────────────────────────────────────────────────────────
-print("\n[4/6] cpu_vs_gpu_bar.png")
+print("\n[4/7] cpu_vs_gpu_bar.png")
 
 if df_mpi is not None and df_gpu is not None:
     # Use the single GPU result N and find the closest MPI N
     gpu_n = int(df_gpu["N"].iloc[0])
-    gpu_gbps = float(df_gpu["gpu_throughput_GBps"].iloc[0])
+    gpu_gbps = float(df_gpu["gpu_parallel_throughput_GBps"].iloc[0])
 
     # Best MPI throughput at closest N
     df_mpi_at_n = df_mpi[df_mpi["N"] == gpu_n]
@@ -277,7 +281,7 @@ peak_bw    = get_hw_value(df_hw, "peak_copy_bandwidth")
 peak_gflops= get_hw_value(df_hw, "peak_compute")
 ridge_pt   = get_hw_value(df_hw, "ridge_point")
 tf_ai      = get_hw_value(df_hw, "threefry_arithmetic_intensity") or 2.5
-mt_ai      = get_hw_value(df_hw, "mt_arithmetic_intensity")       or 0.0024
+philox_ai  = get_hw_value(df_hw, "philox_arithmetic_intensity")   or 1.0
 
 # Fall back to sensible defaults if hardware profile not available
 peak_bw     = peak_bw    or 20.0   # 20 GB/s typical DRAM
@@ -312,39 +316,37 @@ ax.axvline(x=ridge_pt, color="dimgray", linestyle=":", linewidth=1.5,
            label=f"Ridge point = {ridge_pt:.2f} FLOP/byte")
 
 # --- Algorithm points ---
-# Threefry MPI achievable performance
+# Single Core Threefry (Baseline)
 threefry_perf = min(peak_gflops, peak_bw * tf_ai)
 ax.plot(tf_ai, threefry_perf,
-        marker="D", color="steelblue", markersize=12,
-        zorder=5, label=f"Threefry MPI  AI={tf_ai:.1f}")
-ax.annotate(f"Threefry\n{threefry_perf:.1f} GFLOPS",
-            xy=(tf_ai, threefry_perf), xytext=(tf_ai * 2, threefry_perf * 0.7),
+        marker="D", color="tomato", markersize=12,
+        zorder=5, label=f"Single Core Threefry (Baseline)  AI={tf_ai:.1f}")
+ax.annotate(f"Baseline\n(Threefry)\n{threefry_perf:.1f} GFLOPS",
+            xy=(tf_ai, threefry_perf), xytext=(tf_ai * 2, threefry_perf * 0.65),
+            fontsize=10, color="tomato",
+            arrowprops=dict(arrowstyle="->", color="tomato"))
+
+# MPI Threefry (Our CPU Contribution) — same AI as single core
+mpi_perf = threefry_perf  # same algorithm, same AI
+ax.plot(tf_ai * 1.05, mpi_perf,  # slight x-offset for visibility
+        marker="s", color="steelblue", markersize=12,
+        zorder=5, label=f"MPI Threefry (CPU Parallel)  AI={tf_ai:.1f}")
+ax.annotate(f"MPI Parallel\n(Threefry)\n{mpi_perf:.1f} GFLOPS",
+            xy=(tf_ai * 1.05, mpi_perf), xytext=(tf_ai * 3.5, mpi_perf * 1.4),
             fontsize=10, color="steelblue",
             arrowprops=dict(arrowstyle="->", color="steelblue"))
 
-# GPU Philox — uses 32-bit ops so slightly different AI (≈ 1.25 for Philox-4x32-10)
-philox_ai   = 1.25
+# GPU Philox (Our GPU Contribution)
 philox_perf = min(peak_gflops, peak_bw * philox_ai)
 ax.plot(philox_ai, philox_perf,
         marker="^", color="mediumseagreen", markersize=12,
-        zorder=5, label=f"Philox GPU  AI={philox_ai:.2f}")
-ax.annotate(f"Philox GPU\n{philox_perf:.1f} GFLOPS",
+        zorder=5, label=f"GPU Philox (GPU Parallel)  AI={philox_ai:.2f}")
+ax.annotate(f"GPU Parallel\n(Philox)\n{philox_perf:.1f} GFLOPS",
             xy=(philox_ai, philox_perf), xytext=(philox_ai * 3, philox_perf * 1.5),
             fontsize=10, color="mediumseagreen",
             arrowprops=dict(arrowstyle="->", color="mediumseagreen"))
 
-# Mersenne Twister
-mt_perf = min(peak_gflops, peak_bw * mt_ai)
-ax.plot(mt_ai, max(mt_perf, 1e-3),
-        marker="o", color="tomato", markersize=12,
-        zorder=5, label=f"Mersenne Twister  AI={mt_ai:.4f}")
-ax.annotate(f"Mersenne\nTwister",
-            xy=(mt_ai, max(mt_perf, 1e-3)),
-            xytext=(mt_ai * 8, max(mt_perf, 1e-3) * 3),
-            fontsize=10, color="tomato",
-            arrowprops=dict(arrowstyle="->", color="tomato"))
-
-ax.set_title("Roofline Model: Counter-based PRNGs vs Mersenne Twister")
+ax.set_title("Roofline Model: Single Core Threefry Baseline vs MPI & GPU Parallel")
 ax.set_xlabel("Arithmetic Intensity (FLOP / byte)  [log scale]")
 ax.set_ylabel("Performance (GFLOPS)  [log scale]")
 ax.legend(loc="upper left", fontsize=9)
@@ -356,9 +358,62 @@ plt.close(fig)
 print(f"   Saved → {save_path}")
 
 # ─────────────────────────────────────────────────────────────────────────────
-# PLOT 6: Combined Speedup & Efficiency (dual Y-axis)
+# PLOT 6: GPU Scaling — single thread vs parallel
 # ─────────────────────────────────────────────────────────────────────────────
-print("\n[6/6] scaling_analysis.png")
+print("\n[6/7] gpu_scaling.png")
+
+if df_gpu is not None and "gpu_baseline_throughput_GBps" in df_gpu.columns:
+    gpu_baseline_gbps  = float(df_gpu["gpu_baseline_throughput_GBps"].iloc[0])
+    gpu_parallel_gbps  = float(df_gpu["gpu_parallel_throughput_GBps"].iloc[0])
+    gpu_num_threads    = int(df_gpu["num_cuda_threads"].iloc[0])
+    gpu_speedup        = float(df_gpu["gpu_speedup_vs_single_thread"].iloc[0])
+
+    thread_counts  = [1, gpu_num_threads]
+    throughputs    = [gpu_baseline_gbps, gpu_parallel_gbps]
+
+    fig, ax = plt.subplots(figsize=(9, 6))
+
+    ax.plot(thread_counts, throughputs,
+            color="mediumseagreen", marker="o", linewidth=2.5,
+            label="GPU Philox Throughput")
+
+    ax.plot(thread_counts[0], throughputs[0],
+            color="tomato", marker="D", markersize=12, zorder=5,
+            label=f"GPU Baseline (1 thread): {gpu_baseline_gbps:.2f} GB/s")
+
+    ax.plot(thread_counts[1], throughputs[1],
+            color="mediumseagreen", marker="^", markersize=12, zorder=5,
+            label=f"GPU Parallel ({gpu_num_threads:,} threads): {gpu_parallel_gbps:.2f} GB/s")
+
+    ax.annotate(f"{gpu_baseline_gbps:.2f} GB/s\n(1 thread)",
+                xy=(thread_counts[0], throughputs[0]),
+                xytext=(thread_counts[0] * 5, throughputs[0] * 1.4),
+                fontsize=10, color="tomato",
+                arrowprops=dict(arrowstyle="->", color="tomato"))
+    ax.annotate(f"{gpu_parallel_gbps:.2f} GB/s\n({gpu_num_threads:,} threads)\n{gpu_speedup:.1f}x speedup",
+                xy=(thread_counts[1], throughputs[1]),
+                xytext=(thread_counts[1] * 0.1, throughputs[1] * 0.75),
+                fontsize=10, color="darkgreen",
+                arrowprops=dict(arrowstyle="->", color="darkgreen"))
+
+    ax.set_xscale("log")
+    ax.set_title(f"GPU Philox Scaling: 1 Thread → {gpu_num_threads:,} Threads  ({gpu_speedup:.1f}x speedup)")
+    ax.set_xlabel("Number of CUDA Threads (log scale)")
+    ax.set_ylabel("Throughput (GB/s)")
+    ax.legend(loc="upper left")
+    ax.grid(True, which="both", alpha=0.3)
+    fig.tight_layout()
+    save_path = os.path.join(PLOTS_DIR, "gpu_scaling.png")
+    fig.savefig(save_path)
+    plt.close(fig)
+    print(f"   Saved → {save_path}")
+else:
+    print("   Skipped — no GPU baseline data available.")
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PLOT 7: Combined Speedup & Efficiency (dual Y-axis)
+# ─────────────────────────────────────────────────────────────────────────────
+print("\n[7/7] scaling_analysis.png")
 
 if df_mpi is not None and "num_processes" in df_mpi.columns:
     df_mpi_sorted  = df_mpi.sort_values("num_processes").drop_duplicates("num_processes")
@@ -401,5 +456,5 @@ if df_mpi is not None and "num_processes" in df_mpi.columns:
 else:
     print("   Skipped — no MPI data available.")
 
-print("\n✓ All plots generated successfully.")
+print("\n✓ All 7 plots generated successfully.")
 print(f"  Output directory: {os.path.abspath(PLOTS_DIR)}\n")

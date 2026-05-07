@@ -1,90 +1,104 @@
 /*
- * File: sequential_mt.cpp
+ * File: sequential_threefry.cpp
  * Project: Parallel Random Number Generation
  * Paper: "Parallel Random Numbers: As Easy as 1,2,3"
  *         Salmon et al., SC11, 2011
  * Course: CS-3006 Parallel and Distributed Computing
- * Purpose: Sequential baseline using Mersenne Twister (std::mt19937_64).
- *          Demonstrates the throughput of a traditional PRNG that CANNOT
- *          be efficiently parallelized due to its sequential state machine.
- * Compile: g++ -O2 -std=c++17 -o baseline sequential_mt.cpp
- * Run:     ./baseline [N]
- *          Example: ./baseline 10000000
+ * Purpose: Sequential single-core baseline using Threefry-4x64-20 from the
+ *          Random123 library. This is the AUTHORS' OWN implementation running
+ *          on a single CPU core with no MPI and no CUDA.
+ *
+ *          This is the CORRECT baseline for this project:
+ *            - The paper introduces counter-based PRNGs; Threefry is their impl.
+ *            - Mersenne Twister is only background context, NOT the baseline.
+ *            - Speedup of MPI and GPU versions is measured AGAINST this file.
+ *
+ * Compile: g++ -O2 -std=c++17 -I../random123/include \
+ *              -o sequential_threefry sequential_threefry.cpp
+ * Run:     ./sequential_threefry [N]
+ *          Example: ./sequential_threefry 10000000
  */
 
 // ── Standard Library Includes ────────────────────────────────────────────────
-// All required headers for I/O, timing, file output, and random generation
-#include <iostream>       // std::cout, std::cerr
-#include <fstream>        // std::ofstream for CSV output
-#include <chrono>         // high_resolution_clock for accurate timing
-#include <random>         // std::mt19937_64 Mersenne Twister 64-bit
-#include <vector>         // std::vector for storing generated values
-#include <string>         // std::string for formatting
-#include <cstdint>        // uint64_t
-#include <iomanip>        // std::setprecision, std::fixed
-#include <numeric>        // std::accumulate
-#include <filesystem>     // std::filesystem::create_directories
+#include <iostream>
+#include <fstream>
+#include <chrono>
+#include <vector>
+#include <string>
+#include <cstdint>
+#include <iomanip>
+#include <filesystem>
 
 // ── Using Namespace ───────────────────────────────────────────────────────────
 using namespace std;
 
-// ── Constants ────────────────────────────────────────────────────────────────
-// Default values used when no command-line arguments are provided
-static constexpr long long DEFAULT_N         = 10'000'000LL;  // 10 million values
-static constexpr int       NUM_TIMING_RUNS   = 5;             // runs to average over
-static constexpr uint64_t  MT_SEED           = 42ULL;         // reproducible seed
+// ── Random123 Header: Threefry ────────────────────────────────────────────────
+// Random123 is HEADER-ONLY — no build step needed.
+// Threefry-4x64-20 generates 4 × 64-bit values per call using 20 rounds
+// of the Threefish block cipher key schedule.
+//
+// Why Threefry for CPU? (Paper Section 4.1, Salmon et al. SC11 2011)
+// -----------------------------------------------------------------
+// Threefry uses 64-bit integer additions, XORs, and rotations.
+// Modern CPUs handle these natively and efficiently.
+// Threefry is the paper's recommended choice for general-purpose CPU PRNG.
+//
+// Counter-based model:
+//   output(n) = bijection(key, counter_n)
+//   Pure function, ZERO mutable state, trivially parallelizable.
+#include <Random123/threefry.h>
 
-// ── Why Mersenne Twister Cannot Be Parallelized ───────────────────────────────
+// ── Constants ────────────────────────────────────────────────────────────────
+static constexpr long long DEFAULT_N       = 10'000'000LL;  // 10 million values
+static constexpr int       NUM_TIMING_RUNS = 5;             // runs to average
+
+// Fixed key: all zeros — reproducible. Any constant works; the key
+// distinguishes this stream from other parameterizations.
+// (In mpi_threefry.cpp each rank uses its rank number as word 0 of the key.)
+static const threefry4x64_key_t THREEFRY_KEY = {{ 0ULL, 0ULL, 0ULL, 0ULL }};
+
+// ── Project Baseline Story ────────────────────────────────────────────────────
 //
-// 1. SEQUENTIAL STATE DEPENDENCY
-//    MT maintains an internal state array of 624 × 32-bit integers (2496 bytes).
-//    Each call to mt19937_64::operator() updates that state in-place.
-//    To generate the k-th value you MUST have already generated values 0..k-1
-//    because the state at step k is derived from the state at step k-1.
-//    This creates an inherent sequential chain: x[k] = f(state[k-1]).
+// This file is Step 1 of the project story:
 //
-// 2. THREAD-UNSAFE BY DESIGN
-//    Splitting MT across threads requires either:
-//    (a) One generator per thread → each thread has its own 2496-byte state.
-//        But then outputs from different threads are correlated because they
-//        are all seeded from the same initial state (or nearby states).
-//    (b) One shared generator + mutex → serializes all access, no speedup.
+//   Step 1 — THIS FILE: Single core Threefry-4x64-20
+//             The authors' own implementation from Random123.
+//             Serves as the reference point (speedup = 1.00x).
 //
-// 3. CACHE PRESSURE AT SCALE
-//    With T threads, total MT state = T × 2496 bytes.
-//    At 8 threads: 19,968 bytes ≈ 20 KB — exceeds L1 cache (typically 32 KB).
-//    At 32 threads: ~78 KB — exceeds L2 cache on many CPUs.
-//    Counter-based PRNGs (Threefry, Philox) have ZERO state — the output is
-//    computed directly from (key, counter) with no stored mutable state.
+//   Step 2 — cpu_parallel/mpi_threefry.cpp:
+//             Same Threefry-4x64-20, parallelized with MPI.
+//             Each rank uses rank number as unique key.
+//             Speedup measured AGAINST this single-core baseline.
 //
-// 4. NO SKIP-AHEAD SUPPORT
-//    MT does not support efficient skip-ahead (jumping to the k-th value
-//    without computing all previous values). Threefry/Philox support this
-//    trivially: just set counter = k.
+//   Step 3 — gpu_parallel/cuda_philox.cu:
+//             Philox-4x32-10 on NVIDIA GPU via CUDA.
+//             Philox is Threefry's GPU-native sibling from the same paper.
+//             Speedup measured AGAINST this single-core baseline.
 //
-// PDC Concept: Amdahl's Law — the sequential state dependency is the
-// serial fraction that limits the theoretical maximum parallel speedup.
+// Role of Mersenne Twister in this project:
+//   MT is NOT a baseline. It is mentioned only in comments and the report
+//   as background motivation — to show WHY counter-based PRNGs were needed.
+//   MT has a 2496-byte sequential state; Threefry/Philox have ZERO state.
 
 // ── Helper: Format Large Numbers with Commas ─────────────────────────────────
-// Formats a number like 10000000 → "10,000,000" for readable output
 static string format_with_commas(long long value) {
-    string number_string = to_string(value);
-    int         insert_position = static_cast<int>(number_string.size()) - 3;
-    while (insert_position > 0) {
-        number_string.insert(static_cast<size_t>(insert_position), ",");
-        insert_position -= 3;
+    string s = to_string(value);
+    int pos = static_cast<int>(s.size()) - 3;
+    while (pos > 0) {
+        s.insert(static_cast<size_t>(pos), ",");
+        pos -= 3;
     }
-    return number_string;
+    return s;
 }
 
 // ── Helper: Print Formatted Results Table ────────────────────────────────────
-// Prints a UTF-8 box-drawing table to stdout, matching project spec
 static void print_results_table(long long total_numbers_generated,
                                 double    elapsed_seconds,
                                 double    throughput_GBps)
 {
     cout << "\n┌─────────────────────────────────────────────────┐\n";
-    cout <<   "│       Sequential Mersenne Twister Results       │\n";
+    cout <<   "│   Single Core Threefry-4x64-20 Results          │\n";
+    cout <<   "│   (Authors Baseline — Random123 Library)         │\n";
     cout <<   "├─────────────────────────────────────────────────┤\n";
     cout <<   "│  N generated  : " << left << setw(32)
               << format_with_commas(total_numbers_generated) << "│\n";
@@ -95,7 +109,7 @@ static void print_results_table(long long total_numbers_generated,
     cout <<   "│  Throughput   : " << left << setw(32)
               << (to_string(throughput_GBps).substr(0,6) + " GB/s") << "│\n";
     cout <<   "│  Speedup      : " << left << setw(32)
-              << "1.00x (baseline)" << "│\n";
+              << "1.00x (authors baseline)" << "│\n";
     cout <<   "└─────────────────────────────────────────────────┘\n\n";
 }
 
@@ -103,7 +117,6 @@ static void print_results_table(long long total_numbers_generated,
 int main(int argc, char* argv[])
 {
     // ── Parse Command-Line Arguments ─────────────────────────────────────────
-    // Accept optional N as first argument; fall back to DEFAULT_N
     long long total_numbers_to_generate = DEFAULT_N;
     if (argc >= 2) {
         try {
@@ -113,24 +126,24 @@ int main(int argc, char* argv[])
                           << argv[1] << "\n";
                 return EXIT_FAILURE;
             }
-        } catch (const exception& exception) {
+        } catch (const exception& ex) {
             cerr << "[ERROR] Invalid argument for N: " << argv[1]
-                      << " — " << exception.what() << "\n";
+                      << " — " << ex.what() << "\n";
             return EXIT_FAILURE;
         }
     }
 
     cout << "==========================================================\n";
-    cout << "  Sequential Mersenne Twister Baseline\n";
+    cout << "  Single Core Threefry-4x64-20 Baseline\n";
+    cout << "  (Authors Implementation from Random123 Library)\n";
     cout << "  CS-3006 Parallel and Distributed Computing\n";
     cout << "==========================================================\n";
     cout << "  N = " << format_with_commas(total_numbers_to_generate)
               << "  |  Runs = " << NUM_TIMING_RUNS << "\n\n";
 
     // ── Allocate Output Buffer ────────────────────────────────────────────────
-    // PDC concept: Memory bandwidth — we must actually store values to memory
-    // so the measurement reflects real memory pressure, not just compute.
-    // Using uint64_t (8 bytes) matches the 64-bit MT output width.
+    // Threefry-4x64 produces 4 × uint64_t (8 bytes each) per call.
+    // We store all N values to measure real memory pressure, not just compute.
     vector<uint64_t> generated_values;
     try {
         generated_values.resize(static_cast<size_t>(total_numbers_to_generate));
@@ -142,38 +155,56 @@ int main(int argc, char* argv[])
     }
 
     // ── Timing Loop ──────────────────────────────────────────────────────────
-    // Run NUM_TIMING_RUNS independent timed trials and average them.
-    // PDC concept: Measurement noise — a single run can be distorted by OS
-    // scheduling, cache cold-start, or memory bus contention. Averaging
-    // multiple runs gives a stable estimate of steady-state throughput.
+    // Run NUM_TIMING_RUNS independent timed trials and average to reduce
+    // measurement variance from OS scheduling and cache cold-start effects.
     vector<double> run_times_seconds(NUM_TIMING_RUNS, 0.0);
 
     for (int run_index = 0; run_index < NUM_TIMING_RUNS; ++run_index) {
 
-        // Re-seed the generator before every run so each run is identical.
-        // This ensures we measure the same workload each time.
-        mt19937_64 mersenne_twister_engine(MT_SEED);
-
-        // Record wall-clock start time with the highest available resolution
         auto time_start = chrono::high_resolution_clock::now();
 
         // ── Core Generation Loop ──────────────────────────────────────────
-        // This is the sequential bottleneck: each call to the engine
-        // internally updates 624 × 32-bit words of state (the twist step
-        // every 624 values) before returning a tempered output word.
-        // There is NO way to vectorize across calls because call k reads
-        // the state written by call k-1.
-        for (long long value_index = 0;
-             value_index < total_numbers_to_generate;
-             ++value_index)
-        {
-            generated_values[static_cast<size_t>(value_index)] =
-                mersenne_twister_engine();
+        // Threefry-4x64 produces 4 values per call. We process in batches
+        // of 4 for maximum throughput. The counter encodes the absolute
+        // position in the sequence — no state to carry between calls.
+        //
+        // PDC Concept: This is the single-core sequential version.
+        // The parallelization insight: any rank/thread can independently
+        // compute its values by setting counter = its_start_index.
+        // This is what mpi_threefry.cpp exploits with zero communication.
+
+        long long full_batches    = total_numbers_to_generate / 4;
+        long long leftover_values = total_numbers_to_generate % 4;
+        long long write_index     = 0;
+
+        for (long long batch = 0; batch < full_batches; ++batch) {
+            threefry4x64_ctr_t ctr = {{
+                static_cast<uint64_t>(batch * 4),  // counter = absolute index
+                0ULL, 0ULL, 0ULL
+            }};
+            threefry4x64_ctr_t out = threefry4x64(ctr, THREEFRY_KEY);
+
+            generated_values[static_cast<size_t>(write_index + 0)] = out.v[0];
+            generated_values[static_cast<size_t>(write_index + 1)] = out.v[1];
+            generated_values[static_cast<size_t>(write_index + 2)] = out.v[2];
+            generated_values[static_cast<size_t>(write_index + 3)] = out.v[3];
+            write_index += 4;
+        }
+
+        // Handle remainder (0–3 leftover values when N is not a multiple of 4)
+        if (leftover_values > 0) {
+            threefry4x64_ctr_t ctr = {{
+                static_cast<uint64_t>(full_batches * 4),
+                0ULL, 0ULL, 0ULL
+            }};
+            threefry4x64_ctr_t out = threefry4x64(ctr, THREEFRY_KEY);
+            for (long long i = 0; i < leftover_values; ++i)
+                generated_values[static_cast<size_t>(write_index++)] =
+                    out.v[static_cast<size_t>(i)];
         }
 
         auto time_end = chrono::high_resolution_clock::now();
 
-        // Convert to floating-point seconds for throughput calculation
         run_times_seconds[run_index] =
             chrono::duration<double>(time_end - time_start).count();
 
@@ -183,23 +214,17 @@ int main(int argc, char* argv[])
     }
 
     // ── Compute Average Time & Throughput ────────────────────────────────────
-    // Average over all runs to reduce measurement variance
     double total_time_seconds = 0.0;
-    for (int run_index = 0; run_index < NUM_TIMING_RUNS; ++run_index) {
-        total_time_seconds += run_times_seconds[run_index];
-    }
+    for (int i = 0; i < NUM_TIMING_RUNS; ++i)
+        total_time_seconds += run_times_seconds[i];
     double average_elapsed_seconds = total_time_seconds / NUM_TIMING_RUNS;
 
-    // Throughput formula from project specification:
-    // bytes transferred = N * sizeof(uint64_t) = N * 8
-    // throughput GB/s   = bytes / (time_s * 1e9)
+    // Throughput: N × sizeof(uint64_t) bytes / time
     double throughput_GBps =
         (static_cast<double>(total_numbers_to_generate) * sizeof(uint64_t)) /
         (average_elapsed_seconds * 1.0e9);
 
     // ── Prevent Dead-Code Elimination ────────────────────────────────────────
-    // Print one value so the compiler cannot eliminate the generation loop
-    // as dead code (since we never "use" generated_values otherwise).
     cout << "\n  [Sanity] First generated value : 0x"
               << hex << generated_values[0] << dec << "\n";
 
@@ -209,33 +234,26 @@ int main(int argc, char* argv[])
                         throughput_GBps);
 
     // ── Save Results to CSV ───────────────────────────────────────────────────
-    // PDC concept: Reproducibility — store raw results so downstream analysis
-    // (roofline_analysis.cpp, generate_plots.py) can read them without
-    // re-running the experiment.
-    //
     // CSV format: N, time_seconds, throughput_GBps
+    // This file is read by mpi_threefry.cpp and cuda_philox.cu to compute
+    // speedup relative to THIS single-core Threefry baseline.
     const string results_directory = "results";
     const string csv_file_path     = results_directory + "/baseline_results.csv";
 
-    // Create results/ directory if it does not already exist
     try {
         filesystem::create_directories(results_directory);
     } catch (const filesystem::filesystem_error& fs_error) {
         cerr << "[WARNING] Could not create results directory: "
-                  << fs_error.what() << " — CSV will not be saved.\n";
+                  << fs_error.what() << "\n";
     }
 
     ofstream csv_output_file(csv_file_path);
     if (!csv_output_file.is_open()) {
-        cerr << "[ERROR] Cannot open " << csv_file_path
-                  << " for writing. Check directory permissions.\n";
+        cerr << "[ERROR] Cannot open " << csv_file_path << " for writing.\n";
         return EXIT_FAILURE;
     }
 
-    // Write header row (required by project specification)
     csv_output_file << "N,time_seconds,throughput_GBps\n";
-
-    // Write data row with full precision
     csv_output_file << fixed << setprecision(9)
                     << total_numbers_to_generate << ","
                     << average_elapsed_seconds    << ","

@@ -34,32 +34,35 @@ static constexpr int    BANDWIDTH_ITERATIONS  = 10;
 static constexpr int    COMPUTE_ITERATIONS    = 10;
 static constexpr long long FMA_LOOP_COUNT     = 500'000'000LL; // 500M FMA ops per iteration
 
-// ── Threefry Arithmetic Intensity (from paper analysis) ───────────────────────
+// ── Arithmetic Intensity Analysis (from paper, Salmon et al. SC11 2011) ─────────────
 //
-// Threefry-4x64-20 operation count:
+// Single Core Threefry-4x64-20 (Baseline):
 //   20 rounds × (4 additions + 4 XORs + 4 rotations) = 20 × 12 = 240 operations
+//   Memory: counter (32 B) + key (32 B) + output (32 B) = 96 bytes total
+//   Arithmetic Intensity = 240 / 96 = 2.5 FLOP/byte
+//   State size: ZERO bytes (stateless — key insight of counter-based design)
 //
-// Memory traffic per call:
-//   Input:  counter (4 × 8 bytes = 32 bytes) + key (4 × 8 bytes = 32 bytes) = 64 bytes
-//   Output: 4 × 8 bytes = 32 bytes
-//   Total:  64 + 32 = 96 bytes
+// MPI Threefry (Our CPU Contribution):
+//   Same algorithm as single core: AI = 2.5 FLOP/byte
+//   Additional overhead: MPI_Reduce at end only (P doubles total)
+//   Communication is minimal and happens only ONCE after all generation
+//   Near-linear scaling expected because generation is embarrassingly parallel
 //
-// Arithmetic Intensity = 240 ops / 96 bytes = 2.5 FLOP/byte
-//
-// Mersenne Twister:
-//   State array: 624 × 32-bit = 2496 bytes  (must be read and partially written each call)
-//   Operations per output: ~6 (twist + temper)
-//   Arithmetic Intensity ≈ 6 / 2496 ≈ 0.0024 FLOP/byte
-//   (extremely memory-bound — the bottleneck is loading the huge state)
+// GPU Philox-4x32-10 (Our GPU Contribution):
+//   10 rounds × (2 multiplications + 2 XORs) = 10 × 4 = 40 operations per call
+//   Memory: counter (16 B) + key (8 B) + output (16 B) = 40 bytes total
+//   Arithmetic Intensity = 40 / 40 = 1.0 FLOP/byte
+//   GPU has much higher memory bandwidth → compensates for lower AI
+//   32-bit multiply maps to native GPU hardware units (single-cycle)
 static constexpr double THREEFRY_OPERATIONS_PER_CALL = 240.0;
 static constexpr double THREEFRY_BYTES_PER_CALL       =  96.0;
 static constexpr double THREEFRY_ARITHMETIC_INTENSITY =
     THREEFRY_OPERATIONS_PER_CALL / THREEFRY_BYTES_PER_CALL;  // = 2.5
 
-static constexpr double MT_OPS_PER_OUTPUT    =   6.0;
-static constexpr double MT_STATE_BYTES       = 2496.0;
-static constexpr double MT_ARITHMETIC_INTENSITY =
-    MT_OPS_PER_OUTPUT / MT_STATE_BYTES;  // ≈ 0.0024
+static constexpr double PHILOX_OPERATIONS_PER_CALL   =  40.0;
+static constexpr double PHILOX_BYTES_PER_CALL         =  40.0;
+static constexpr double PHILOX_ARITHMETIC_INTENSITY  =
+    PHILOX_OPERATIONS_PER_CALL / PHILOX_BYTES_PER_CALL;  // = 1.0
 
 // ── Helper: Timing using chrono ──────────────────────────────────────────────
 static double get_elapsed_seconds(
@@ -275,35 +278,6 @@ int main()
     // PDC Concept: Arithmetic Intensity = FLOPS / Bytes = the ratio of
     // computation to memory traffic. This determines whether an algorithm
     // is limited by memory bandwidth or compute throughput.
-    cout << "── Arithmetic Intensity Analysis ────────────────────────\n\n";
-
-    cout << "  Threefry-4x64-20 (from Salmon et al. SC11 2011):\n";
-    cout << "  ┌─────────────────────────────────────────────────┐\n";
-    cout << "  │  20 rounds × (4 add + 4 XOR + 4 rotate)         │\n";
-    cout << "  │  = 20 × 12 = " << setw(3) << static_cast<int>(THREEFRY_OPERATIONS_PER_CALL)
-              << " operations per call             │\n";
-    cout << "  │                                                 │\n";
-    cout << "  │  Input:  counter 32 B + key 32 B = 64 B         │\n";
-    cout << "  │  Output: 4 × 8 B = 32 B                         │\n";
-    cout << "  │  Total memory traffic = 96 bytes per call        │\n";
-    cout << "  │                                                 │\n";
-    cout << "  │  Arithmetic Intensity = 240 / 96 = "
-              << fixed << setprecision(2) << THREEFRY_ARITHMETIC_INTENSITY
-              << " FLOP/B  │\n";
-    cout << "  └─────────────────────────────────────────────────┘\n\n";
-
-    cout << "  Mersenne Twister (mt19937_64):\n";
-    cout << "  ┌─────────────────────────────────────────────────┐\n";
-    cout << "  │  State: 624 × 32-bit words = 2496 bytes          │\n";
-    cout << "  │  Each output: ~6 operations (twist + temper)     │\n";
-    cout << "  │  Memory traffic ≈ state size = 2496 bytes        │\n";
-    cout << "  │                                                 │\n";
-    cout << "  │  Arithmetic Intensity = 6 / 2496 ≈ "
-              << fixed << setprecision(4) << MT_ARITHMETIC_INTENSITY
-              << " FLOP/B │\n";
-    cout << "  │  (100× lower than Threefry — extremely          │\n";
-    cout << "  │   memory-bound at scale)                        │\n";
-    cout << "  └─────────────────────────────────────────────────┘\n\n";
 
     // ── Roofline Model ────────────────────────────────────────────────────────
     // PDC Concept: Roofline Model (Williams et al. 2009)
@@ -314,55 +288,56 @@ int main()
     double ridge_point_FLOP_per_byte = peak_compute_GFLOPS /
                                         peak_copy_bandwidth_GBps;
 
-    // Achievable performance for each algorithm (GFLOPS)
     double threefry_achievable_GFLOPS =
-        min(peak_compute_GFLOPS,
-                 peak_copy_bandwidth_GBps * THREEFRY_ARITHMETIC_INTENSITY);
+        min(peak_compute_GFLOPS, peak_copy_bandwidth_GBps * THREEFRY_ARITHMETIC_INTENSITY);
+    double philox_achievable_GFLOPS =
+        min(peak_compute_GFLOPS, peak_copy_bandwidth_GBps * PHILOX_ARITHMETIC_INTENSITY);
 
-    double mt_achievable_GFLOPS =
-        min(peak_compute_GFLOPS,
-                 peak_copy_bandwidth_GBps * MT_ARITHMETIC_INTENSITY);
+    cout << "── Arithmetic Intensity Analysis ────────────────────────────────────────\n\n";
+    cout << "  Single Core Threefry-4x64-20 (Authors Baseline):\n";
+    cout << "  ┌─────────────────────────────────────────────────────────────────┐\n";
+    cout << "  │  20 rounds × (4 add + 4 XOR + 4 rotate) = 240 ops per call    │\n";
+    cout << "  │  Memory: 32 B (ctr) + 32 B (key) + 32 B (out) = 96 bytes      │\n";
+    cout << "  │  Arithmetic Intensity = 240 / 96 = "
+              << fixed << setprecision(2) << THREEFRY_ARITHMETIC_INTENSITY
+              << " FLOP/byte                │\n";
+    cout << "  │  State size: ZERO bytes (stateless counter-based design)        │\n";
+    cout << "  │  Achievable: "
+              << fixed << setprecision(2) << threefry_achievable_GFLOPS << " GFLOPS"
+              << (THREEFRY_ARITHMETIC_INTENSITY > ridge_point_FLOP_per_byte
+                  ? "  → COMPUTE-BOUND  " : "  → MEMORY-BOUND   ")
+              << "                  │\n";
+    cout << "  └─────────────────────────────────────────────────────────────────┘\n\n";
 
-    cout << "── Roofline Model Analysis ──────────────────────────────\n\n";
-    cout << "  Peak memory bandwidth (STREAM copy) : "
-              << fixed << setprecision(2)
-              << peak_copy_bandwidth_GBps  << " GB/s\n";
-    cout << "  Peak compute (FMA throughput)        : "
-              << fixed << setprecision(2)
-              << peak_compute_GFLOPS       << " GFLOPS\n";
-    cout << "  Ridge point                          : "
-              << fixed << setprecision(3)
-              << ridge_point_FLOP_per_byte << " FLOP/byte\n\n";
+    cout << "  MPI Threefry (Our CPU Contribution):\n";
+    cout << "  ┌─────────────────────────────────────────────────────────────────┐\n";
+    cout << "  │  Same algorithm: AI = 2.50 FLOP/byte (unchanged by MPI)        │\n";
+    cout << "  │  MPI overhead: one MPI_Reduce of P doubles at end only         │\n";
+    cout << "  │  Communication volume = P × 8 bytes (negligible vs N × 8 B)    │\n";
+    cout << "  │  Threefry is stateless → zero per-rank state overhead           │\n";
+    cout << "  │  → Near-linear MPI scaling expected (embarrassingly parallel)  │\n";
+    cout << "  └─────────────────────────────────────────────────────────────────┘\n\n";
 
-    cout << "  Threefry-4x64-20:\n";
-    cout << "    Arithmetic intensity : "
-              << THREEFRY_ARITHMETIC_INTENSITY << " FLOP/byte\n";
-    cout << "    Achievable perf      : "
-              << fixed << setprecision(2)
-              << threefry_achievable_GFLOPS << " GFLOPS\n";
-    if (THREEFRY_ARITHMETIC_INTENSITY > ridge_point_FLOP_per_byte) {
-        cout << "    Verdict              : COMPUTE-BOUND\n";
-        cout << "      → Threefry is limited by CPU throughput, not memory.\n";
-        cout << "      → Scales linearly with core count (ideal for MPI).\n";
-    } else {
-        cout << "    Verdict              : MEMORY-BOUND\n";
-        cout << "      → Threefry is limited by memory bandwidth.\n";
-        cout << "      → Approaches memory bandwidth ceiling.\n";
-    }
-    cout << "\n";
+    cout << "  GPU Philox-4x32-10 (Our GPU Contribution):\n";
+    cout << "  ┌─────────────────────────────────────────────────────────────────┐\n";
+    cout << "  │  10 rounds × (2 multiply + 2 XOR) = 40 ops per call            │\n";
+    cout << "  │  Memory: 16 B (ctr) + 8 B (key) + 16 B (out) = 40 bytes       │\n";
+    cout << "  │  Arithmetic Intensity = 40 / 40 = "
+              << fixed << setprecision(2) << PHILOX_ARITHMETIC_INTENSITY
+              << " FLOP/byte                │\n";
+    cout << "  │  Achievable (CPU roof): "
+              << fixed << setprecision(2) << philox_achievable_GFLOPS << " GFLOPS"
+              << "                             │\n";
+    cout << "  │  32-bit multiply is a native single-cycle GPU operation         │\n";
+    cout << "  │  GPU bandwidth >> CPU bandwidth → compensates for lower AI     │\n";
+    cout << "  └─────────────────────────────────────────────────────────────────┘\n\n";
 
-    cout << "  Mersenne Twister:\n";
-    cout << "    Arithmetic intensity : "
-              << fixed << setprecision(6)
-              << MT_ARITHMETIC_INTENSITY << " FLOP/byte\n";
-    cout << "    Achievable perf      : "
-              << fixed << setprecision(4)
-              << mt_achievable_GFLOPS << " GFLOPS\n";
-    cout << "    Verdict              : SEVERELY MEMORY-BOUND\n";
-    cout << "      → MT's 2496-byte state causes cache pressure at scale.\n";
-    cout << "      → With T threads: " << (2496*8/1024)
-              << " KB state per 8 threads → cache overflow.\n";
-    cout << "      → Scaling MT across cores degrades performance.\n\n";
+    cout << "  Ridge point: " << fixed << setprecision(3) << ridge_point_FLOP_per_byte
+              << " FLOP/byte  (Threefry AI=" << THREEFRY_ARITHMETIC_INTENSITY
+              << " is " << (THREEFRY_ARITHMETIC_INTENSITY > ridge_point_FLOP_per_byte
+                            ? "above" : "below") << " ridge → "
+              << (THREEFRY_ARITHMETIC_INTENSITY > ridge_point_FLOP_per_byte
+                  ? "compute-bound" : "memory-bound") << ")\n\n";
 
     // ── Save Hardware Profile to CSV ──────────────────────────────────────────
     const string results_directory = "results";
@@ -385,8 +360,8 @@ int main()
     csv_output_file << "ridge_point,"          << ridge_point_FLOP_per_byte  << ",FLOP/byte\n";
     csv_output_file << "threefry_arithmetic_intensity,"
                     << THREEFRY_ARITHMETIC_INTENSITY << ",FLOP/byte\n";
-    csv_output_file << "mt_arithmetic_intensity,"
-                    << MT_ARITHMETIC_INTENSITY << ",FLOP/byte\n";
+    csv_output_file << "philox_arithmetic_intensity,"
+                    << PHILOX_ARITHMETIC_INTENSITY   << ",FLOP/byte\n";
     csv_output_file.close();
 
     cout << "  Hardware profile saved → " << csv_file_path << "\n\n";

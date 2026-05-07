@@ -18,7 +18,6 @@
 #include <fstream>
 #include <sstream>
 #include <chrono>
-#include <random>
 #include <vector>
 #include <string>
 #include <cstdint>
@@ -49,6 +48,7 @@ using namespace std;
 //   x32: each word is 32 bits
 //   10 : uses 10 rounds of the S-box network
 #include <Random123/philox.h>
+#include <Random123/threefry.h>
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 static constexpr long long DEFAULT_N          = 10'000'000LL;
@@ -199,16 +199,41 @@ static double read_baseline_time_seconds(const string& csv_path) {
     try { return stod(token); } catch (...) { return -1.0; }
 }
 
-// ── CPU Sequential MT Benchmark (same machine comparison) ────────────────────
-// Runs std::mt19937_64 for the same N on the host CPU to provide a
+// ── CPU Single Core Threefry Benchmark (same machine comparison) ─────────────
+// Runs Threefry-4x64-20 for the same N on the host CPU to provide a
 // direct apples-to-apples comparison on the same hardware.
-static double cpu_mt_benchmark_seconds(long long total_numbers) {
+//
+// We use Threefry (not MT) because:
+//   - Threefry is the authors' baseline from Random123 (same paper as Philox)
+//   - Both Threefry and Philox are counter-based PRNGs from the same library
+//   - This comparison isolates the CPU-vs-GPU dimension, not algorithm
+//   - MT is only background motivation, not a benchmark target
+static double cpu_threefry_benchmark_seconds(long long total_numbers) {
     vector<uint64_t> cpu_buffer(static_cast<size_t>(total_numbers));
-    mt19937_64 cpu_mt_engine(42ULL);
+    static const threefry4x64_key_t tf_key = {{ 0ULL, 0ULL, 0ULL, 0ULL }};
 
     auto cpu_start = chrono::high_resolution_clock::now();
-    for (long long idx = 0; idx < total_numbers; ++idx)
-        cpu_buffer[static_cast<size_t>(idx)] = cpu_mt_engine();
+
+    long long full_batches    = total_numbers / 4;
+    long long leftover_values = total_numbers % 4;
+    long long write_idx       = 0;
+
+    for (long long batch = 0; batch < full_batches; ++batch) {
+        threefry4x64_ctr_t ctr = {{ static_cast<uint64_t>(batch * 4), 0ULL, 0ULL, 0ULL }};
+        threefry4x64_ctr_t out = threefry4x64(ctr, tf_key);
+        cpu_buffer[static_cast<size_t>(write_idx + 0)] = out.v[0];
+        cpu_buffer[static_cast<size_t>(write_idx + 1)] = out.v[1];
+        cpu_buffer[static_cast<size_t>(write_idx + 2)] = out.v[2];
+        cpu_buffer[static_cast<size_t>(write_idx + 3)] = out.v[3];
+        write_idx += 4;
+    }
+    if (leftover_values > 0) {
+        threefry4x64_ctr_t ctr = {{ static_cast<uint64_t>(full_batches * 4), 0ULL, 0ULL, 0ULL }};
+        threefry4x64_ctr_t out = threefry4x64(ctr, tf_key);
+        for (long long i = 0; i < leftover_values; ++i)
+            cpu_buffer[static_cast<size_t>(write_idx++)] = out.v[static_cast<size_t>(i)];
+    }
+
     auto cpu_end = chrono::high_resolution_clock::now();
 
     volatile uint64_t sink = cpu_buffer[0];
@@ -391,52 +416,115 @@ int main(int argc, char* argv[])
                           output_buffer_size_bytes,
                           cudaMemcpyDeviceToHost));
 
-    // ── CPU Sequential MT Benchmark (same machine) ────────────────────────────
-    cout << "\n  Running CPU MT benchmark for comparison...\n";
-    double cpu_elapsed_seconds = cpu_mt_benchmark_seconds(total_numbers_to_generate);
-    double cpu_time_ms         = cpu_elapsed_seconds * 1000.0;
+    // ── GPU Baseline: Single Thread Philox <<<1, 1>>> ───────────────────────────
+    // PDC Concept: GPU parallelization baseline.
+    // Runs the SAME Philox kernel on the SAME GPU hardware with <<<1, 1>>>.
+    // The grid-stride loop in philox_generate_kernel processes all N Philox
+    // calls sequentially in that single thread.
+    //
+    // PRIMARY SPEEDUP DEFINITION:
+    //   speedup = gpu_baseline_time / gpu_parallel_time
+    //   → Same hardware + same algorithm + same data, only thread count differs.
+    //   → This cleanly isolates the GPU PARALLELIZATION benefit.
+    //   → No hardware differences, no algorithm differences contaminate it.
+    cout << "\n  GPU baseline warmup (1 CUDA thread, " << NUM_WARMUP_RUNS << " iters)...\n";
+    for (int warmup = 0; warmup < NUM_WARMUP_RUNS; ++warmup) {
+        philox_generate_kernel<<<1, 1>>>(
+            output_device_buffer, total_numbers_to_generate,
+            SHARED_KEY_WORD_0, SHARED_KEY_WORD_1);
+    }
+    CUDA_CHECK(cudaDeviceSynchronize());
+
+    cout << "  GPU baseline timed (" << NUM_TIMED_RUNS << " iters)...\n";
+    float total_gpu_baseline_ms = 0.0f;
+    for (int base_run = 0; base_run < NUM_TIMED_RUNS; ++base_run) {
+        CUDA_CHECK(cudaEventRecord(cuda_event_start, 0));
+        philox_generate_kernel<<<1, 1>>>(
+            output_device_buffer, total_numbers_to_generate,
+            SHARED_KEY_WORD_0, SHARED_KEY_WORD_1);
+        CUDA_CHECK(cudaEventRecord(cuda_event_stop, 0));
+        CUDA_CHECK(cudaEventSynchronize(cuda_event_stop));
+        float iter_ms = 0.0f;
+        CUDA_CHECK(cudaEventElapsedTime(&iter_ms, cuda_event_start, cuda_event_stop));
+        total_gpu_baseline_ms += iter_ms;
+        cout << "  Baseline run " << (base_run + 1) << "/" << NUM_TIMED_RUNS
+                  << "  →  " << fixed << setprecision(3) << iter_ms << " ms\n";
+    }
+    double average_gpu_baseline_ms      = total_gpu_baseline_ms / NUM_TIMED_RUNS;
+    double average_gpu_baseline_seconds = average_gpu_baseline_ms / 1000.0;
+    double gpu_baseline_throughput_GBps =
+        (static_cast<double>(total_numbers_to_generate) * sizeof(uint32_t)) /
+        (average_gpu_baseline_seconds * 1.0e9);
+
+    // ── CPU Single Core Threefry (informational — different hardware) ─────────
+    cout << "\n  Running CPU single core Threefry benchmark (informational)...\n";
+    double cpu_elapsed_seconds = cpu_threefry_benchmark_seconds(total_numbers_to_generate);
     double cpu_throughput_GBps =
         (static_cast<double>(total_numbers_to_generate) * sizeof(uint64_t)) /
         (cpu_elapsed_seconds * 1.0e9);
 
-    // ── Compute Speedup ───────────────────────────────────────────────────────
-    // Primary speedup: GPU vs same-machine CPU MT
-    double gpu_vs_cpu_speedup = cpu_elapsed_seconds / average_gpu_time_seconds;
+    // ── Primary Speedup: GPU Parallel vs GPU Single Thread ────────────────────
+    double gpu_parallel_speedup = average_gpu_baseline_ms / average_gpu_time_ms;
 
-    // Also compute vs stored baseline if available
-    double baseline_elapsed_seconds =
-        read_baseline_time_seconds("results/baseline_results.csv");
-    double gpu_vs_baseline_speedup =
-        (baseline_elapsed_seconds > 0.0)
-            ? baseline_elapsed_seconds / average_gpu_time_seconds
-            : gpu_vs_cpu_speedup;
+    // Hardware ratio (informational only — different CPU vs GPU hardware)
+    double hardware_ratio = cpu_elapsed_seconds / average_gpu_time_seconds;
 
-    // ── Print Results Table ───────────────────────────────────────────────────
-    cout << "\n┌──────────────────────────────────────────────────────┐\n";
-    cout <<   "│         GPU Philox-4x32-10 Results                  │\n";
-    cout <<   "├──────────────────────────────────────────────────────┤\n";
-    cout <<   "│  GPU device     : " << left << setw(34)
-              << gpu_device_properties.name << "│\n";
-    cout <<   "│  CUDA threads   : " << left << setw(34)
-              << format_with_commas(total_gpu_threads) << "│\n";
-    cout <<   "│  Grid dims      : " << left << setw(34)
-              << (to_string(num_blocks) + " blocks × " +
-                  to_string(threads_per_block) + " threads") << "│\n";
-    cout <<   "│  N generated    : " << left << setw(34)
-              << format_with_commas(total_numbers_to_generate) << "│\n";
-    cout <<   "│  GPU avg time   : " << left << setw(34)
-              << (to_string(average_gpu_time_ms).substr(0,8) + " ms") << "│\n";
-    cout <<   "│  GPU throughput : " << left << setw(34)
-              << (to_string(gpu_throughput_GBps).substr(0,6) + " GB/s") << "│\n";
-    cout <<   "│  CPU MT time    : " << left << setw(34)
-              << (to_string(cpu_time_ms).substr(0,8) + " ms") << "│\n";
-    cout <<   "│  CPU throughput : " << left << setw(34)
-              << (to_string(cpu_throughput_GBps).substr(0,6) + " GB/s") << "│\n";
-    cout <<   "│  GPU speedup    : " << left << setw(34)
-              << (to_string(gpu_vs_cpu_speedup).substr(0,6) + "x vs CPU MT") << "│\n";
-    cout <<   "└──────────────────────────────────────────────────────┘\n\n";
+    // ── Format helper (avoids repeated ostringstream boilerplate) ─────────────
+    auto fmt = [](double v, int prec) -> string {
+        ostringstream oss;
+        oss << fixed << setprecision(prec) << v;
+        return oss.str();
+    };
 
-    // ── Save Results to CSV ───────────────────────────────────────────────────
+    // ── Print Results Table ─────────────────────────────────────────────
+    // Inner box width: 49 chars. Format:
+    //   Header rows: "│  " + setw(47) + "│"
+    //   Data rows:   "│  " + setw(21) label + ": " + setw(24) value + "│"
+    //   Indented:    "│    " + setw(19) label + ": " + setw(24) value + "│"
+    cout << "\n┌─────────────────────────────────────────────────┐\n";
+    cout <<   "│  GPU Philox Results                             │\n";
+    cout <<   "├─────────────────────────────────────────────────┤\n";
+    cout <<   "│  " << left << setw(21) << "GPU device"
+              << ": " << left << setw(24) << string(gpu_device_properties.name).substr(0,24) << "│\n";
+    cout <<   "│  " << left << setw(21) << "N generated"
+              << ": " << left << setw(24) << format_with_commas(total_numbers_to_generate) << "│\n";
+    cout <<   "├─────────────────────────────────────────────────┤\n";
+    cout <<   "│  GPU Baseline (1 CUDA thread, Philox)           │\n";
+    cout <<   "│    " << left << setw(19) << "Time"
+              << ": " << left << setw(24) << (fmt(average_gpu_baseline_ms,2) + " ms") << "│\n";
+    cout <<   "│    " << left << setw(19) << "Throughput"
+              << ": " << left << setw(24) << (fmt(gpu_baseline_throughput_GBps,2) + " GB/s") << "│\n";
+    cout <<   "├─────────────────────────────────────────────────┤\n";
+    cout <<   "│  " << left << setw(47)
+              << ("GPU Parallel (" + format_with_commas(total_gpu_threads) + " threads, Philox)")
+              << "│\n";
+    cout <<   "│    " << left << setw(19) << "Threads used"
+              << ": " << left << setw(24) << format_with_commas(total_gpu_threads) << "│\n";
+    cout <<   "│    " << left << setw(19) << "Grid dims"
+              << ": " << left << setw(24)
+              << (to_string(num_blocks) + "b x " + to_string(threads_per_block) + "t")
+              << "│\n";
+    cout <<   "│    " << left << setw(19) << "Time"
+              << ": " << left << setw(24) << (fmt(average_gpu_time_ms,2) + " ms") << "│\n";
+    cout <<   "│    " << left << setw(19) << "Throughput"
+              << ": " << left << setw(24) << (fmt(gpu_throughput_GBps,2) + " GB/s") << "│\n";
+    cout <<   "│    " << left << setw(19) << "Speedup vs baseline"
+              << ": " << left << setw(24) << (fmt(gpu_parallel_speedup,2) + "x") << "│\n";
+    cout <<   "├─────────────────────────────────────────────────┤\n";
+    cout <<   "│  Hardware Observation (informational only)       │\n";
+    cout <<   "│    " << left << setw(19) << "CPU Single Core"
+              << ": " << left << setw(24) << (fmt(cpu_throughput_GBps,2) + " GB/s (Threefry)") << "│\n";
+    cout <<   "│    " << left << setw(19) << "GPU Parallel"
+              << ": " << left << setw(24) << (fmt(gpu_throughput_GBps,2) + " GB/s (Philox)") << "│\n";
+    cout <<   "│    " << left << setw(19) << "Hardware Ratio"
+              << ": " << left << setw(24) << (fmt(hardware_ratio,2) + "x (NOT primary speedup)") << "│\n";
+    cout <<   "└─────────────────────────────────────────────────┘\n\n";
+
+    // ── Save Results to CSV ─────────────────────────────────────────────
+    // New CSV format:
+    // N, gpu_baseline_time_ms, gpu_baseline_throughput_GBps,
+    // gpu_parallel_time_ms, gpu_parallel_throughput_GBps,
+    // gpu_speedup_vs_single_thread, cpu_threefry_throughput_GBps, num_cuda_threads
     const string results_directory = "results";
     const string csv_file_path     = results_directory + "/gpu_results.csv";
 
@@ -446,16 +534,19 @@ int main(int argc, char* argv[])
     if (!csv_output_file.is_open()) {
         cerr << "[ERROR] Cannot open " << csv_file_path << " for writing.\n";
     } else {
-        csv_output_file << "N,num_threads,gpu_time_ms,gpu_throughput_GBps,"
-                           "cpu_time_ms,cpu_throughput_GBps,speedup\n";
+        csv_output_file << "N,gpu_baseline_time_ms,gpu_baseline_throughput_GBps,"
+                           "gpu_parallel_time_ms,gpu_parallel_throughput_GBps,"
+                           "gpu_speedup_vs_single_thread,"
+                           "cpu_threefry_throughput_GBps,num_cuda_threads\n";
         csv_output_file << fixed << setprecision(6)
-            << total_numbers_to_generate << ","
-            << total_gpu_threads         << ","
-            << average_gpu_time_ms       << ","
-            << gpu_throughput_GBps       << ","
-            << cpu_time_ms               << ","
-            << cpu_throughput_GBps       << ","
-            << gpu_vs_cpu_speedup        << "\n";
+            << total_numbers_to_generate        << ","
+            << average_gpu_baseline_ms          << ","
+            << gpu_baseline_throughput_GBps     << ","
+            << average_gpu_time_ms              << ","
+            << gpu_throughput_GBps              << ","
+            << gpu_parallel_speedup             << ","
+            << cpu_throughput_GBps              << ","
+            << total_gpu_threads                << "\n";
         csv_output_file.close();
         cout << "  Results saved → " << csv_file_path << "\n\n";
     }
