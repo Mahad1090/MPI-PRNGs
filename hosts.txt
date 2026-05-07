@@ -1,2 +1,2 @@
-localhost slots=10
 172.15.70.230 slots=8
+172.15.77.43 slots=10

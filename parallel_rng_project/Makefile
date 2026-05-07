@@ -19,7 +19,6 @@ PLOTS_DIR   := $(ROOT)/plots
 R123_INC    := $(ROOT)/random123/include
 
 CXX      := g++
-MPICXX   := mpic++
 NVCC     := nvcc
 CXXFLAGS := -O2 -std=c++17
 
@@ -33,21 +32,41 @@ ROOF_BIN     := $(ROOT)/hardware_profiling/roofline_analysis
 N    := 10000000
 SEED := 42
 
-# Remote machine — adjust REMOTE_HOME if needed
-REMOTE       := rayyan@172.15.70.230
-REMOTE_HOME  := /home/rayyan
+# Remote machine — adjust these if needed
+REMOTE_USER  := mahad1090
+REMOTE_HOST  := 172.15.77.43
+REMOTE       := $(REMOTE_USER)@$(REMOTE_HOST)
+REMOTE_HOME  := /home/mahad1090
 REMOTE_DIR   := $(REMOTE_HOME)/parallel_rng_project
 REMOTE_BIN   := $(REMOTE_DIR)/cpu_parallel/mpi_threefry
-LOCAL_SLOTS  := 10
-REMOTE_SLOTS := 8
+LOCAL_HOST   := localhost
+LOCAL_SLOTS  := 8
+REMOTE_SLOTS := 10
 APPFILE      := $(ROOT)/mpi_appfile
 HOSTFILE     := $(ROOT)/hostfile
+
+# The local machine has a source-built OpenMPI in /usr/local. The remote distro
+# OpenMPI reports the same release but is a different PMIx/ORTE build, so both
+# MPI ranks must use this copied /usr/local build instead.
+LOCAL_MPI_PREFIX  := /usr/local
+REMOTE_MPI_PREFIX := $(REMOTE_HOME)/openmpi-local
+MPICXX            := $(LOCAL_MPI_PREFIX)/bin/mpic++
+MPIRUN            := env PATH=$(LOCAL_MPI_PREFIX)/bin:$$PATH LD_LIBRARY_PATH=$(LOCAL_MPI_PREFIX)/lib mpirun
+MPI_IF_INCLUDE    := 172.15.0.0/16
+MPI_MCA           := --prefix $(REMOTE_MPI_PREFIX) --mca btl tcp,self \
+                    --mca plm_rsh_no_tree_spawn 1 \
+                    --mca plm_rsh_args "-l $(REMOTE_USER)"
+ifneq ($(strip $(MPI_IF_INCLUDE)),)
+MPI_MCA        += --mca btl_tcp_if_include $(MPI_IF_INCLUDE) --mca oob_tcp_if_include $(MPI_IF_INCLUDE)
+else
+MPI_MCA        += --mca btl_tcp_if_exclude lo,docker0 --mca oob_tcp_if_exclude lo,docker0
+endif
 
 .PHONY: all compile compile-baseline compile-mpi compile-gpu compile-bw compile-roof \
         run run-baseline run-mpi-1 run-mpi-2 run-mpi-4 run-mpi-8 run-mpi-10 \
         run-mpi-multi-2 run-mpi-multi-4 run-mpi-multi-8 run-mpi-multi-16 run-mpi-multi-18 \
         run-gpu run-bw run-roof run-plots \
-        deploy remote-compile sync-results hostfile run-remote clean clean-results help
+        deploy deploy-mpi-runtime remote-compile sync-results hostfile run-remote clean clean-results help
 
 # ------------------------------------------------------------------------------
 all: compile
@@ -106,24 +125,24 @@ run-baseline: $(BASELINE_BIN) | $(RESULTS_DIR)
 
 run-mpi-1: $(MPI_BIN) | $(RESULTS_DIR)
 	@echo "  -- MPI Threefry: 1 process"
-	cd $(ROOT) && mpirun --oversubscribe -np 1 $(MPI_BIN) $(N) $(SEED)
+	cd $(ROOT) && $(MPIRUN) --oversubscribe -np 1 $(MPI_BIN) $(N) $(SEED)
 
 run-mpi-2: $(MPI_BIN) | $(RESULTS_DIR)
 	@echo "  -- MPI Threefry: 2 processes"
-	cd $(ROOT) && mpirun --oversubscribe -np 2 $(MPI_BIN) $(N) $(SEED)
+	cd $(ROOT) && $(MPIRUN) --oversubscribe -np 2 $(MPI_BIN) $(N) $(SEED)
 
 run-mpi-4: $(MPI_BIN) | $(RESULTS_DIR)
 	@echo "  -- MPI Threefry: 4 processes"
-	cd $(ROOT) && mpirun --oversubscribe -np 4 $(MPI_BIN) $(N) $(SEED)
+	cd $(ROOT) && $(MPIRUN) --oversubscribe -np 4 $(MPI_BIN) $(N) $(SEED)
 
 run-mpi-8: $(MPI_BIN) | $(RESULTS_DIR)
 	@echo "  -- MPI Threefry: 8 processes"
-	cd $(ROOT) && mpirun --oversubscribe -np 8 $(MPI_BIN) $(N) $(SEED)
+	cd $(ROOT) && $(MPIRUN) --oversubscribe -np 8 $(MPI_BIN) $(N) $(SEED)
 
-# 10 processes (matches localhost slots=10 in hosts.txt)
+# 10 local processes
 run-mpi-10: $(MPI_BIN) | $(RESULTS_DIR)
 	@echo "  -- MPI Threefry: 10 processes"
-	cd $(ROOT) && mpirun --oversubscribe -np 10 $(MPI_BIN) $(N) $(SEED)
+	cd $(ROOT) && $(MPIRUN) --oversubscribe -np 10 $(MPI_BIN) $(N) $(SEED)
 
 run-gpu: $(GPU_BIN) | $(RESULTS_DIR)
 	@echo "  -- GPU Philox CUDA"
@@ -146,18 +165,18 @@ run-plots: | $(RESULTS_DIR)
 run-remote: run-mpi-multi-2 run-mpi-multi-4 run-mpi-multi-8 run-mpi-multi-16 run-mpi-multi-18 run-bw run-roof run-plots
 	@echo ""
 	@echo "  All remote experiments complete."
-	@echo "  Ranks distributed: localhost=10 slots, 172.15.70.230=8 slots"
+	@echo "  Ranks distributed: localhost=$(LOCAL_SLOTS) slots, $(REMOTE_HOST)=$(REMOTE_SLOTS) slots"
 
 # ------------------------------------------------------------------------------
-# MULTI-NODE MPI  (local + rayyan@172.15.70.230)
+# MULTI-NODE MPI  (local + $(REMOTE))
 #
 # Uses an MPI appfile so each host references its own binary path.
 # Prerequisite:  make deploy && make remote-compile
 # Rank 0 = localhost  =>  mpi_results.csv written locally.
 # ------------------------------------------------------------------------------
 hostfile:
-	@printf "localhost slots=$(LOCAL_SLOTS)\n" > $(HOSTFILE)
-	@printf "172.15.70.230 slots=$(REMOTE_SLOTS)\n" >> $(HOSTFILE)
+	@printf "$(LOCAL_HOST) slots=$(LOCAL_SLOTS)\n" > $(HOSTFILE)
+	@printf "$(REMOTE_HOST) slots=$(REMOTE_SLOTS)\n" >> $(HOSTFILE)
 	@echo "  OK  $(HOSTFILE):"
 	@cat $(HOSTFILE)
 
@@ -165,46 +184,46 @@ hostfile:
 run-mpi-multi-2: $(MPI_BIN) | $(RESULTS_DIR)
 	@echo "  -- Multi-node MPI: 1 local + 1 remote"
 	@printf "%s\n" \
-	    "-H localhost -np 1 $(MPI_BIN) $(N) $(SEED)" \
-	    "-H 172.15.70.230 -np 1 $(REMOTE_BIN) $(N) $(SEED)" \
+	    "-wdir $(ROOT) -H $(LOCAL_HOST):$(LOCAL_SLOTS) -np 1 $(MPI_BIN) $(N) $(SEED)" \
+	    "-wdir $(REMOTE_DIR) -H $(REMOTE_HOST):$(REMOTE_SLOTS) -np 1 $(REMOTE_BIN) $(N) $(SEED)" \
 	    > $(APPFILE)
-	cd $(ROOT) && mpirun --mca btl tcp,self --mca btl_tcp_if_exclude lo,docker0 --app $(APPFILE)
+	cd $(ROOT) && $(MPIRUN) $(MPI_MCA) --app $(APPFILE)
 
 # 4 ranks: 2 local + 2 remote
 run-mpi-multi-4: $(MPI_BIN) | $(RESULTS_DIR)
 	@echo "  -- Multi-node MPI: 2 local + 2 remote"
 	@printf "%s\n" \
-	    "-H localhost -np 2 $(MPI_BIN) $(N) $(SEED)" \
-	    "-H 172.15.70.230 -np 2 $(REMOTE_BIN) $(N) $(SEED)" \
+	    "-wdir $(ROOT) -H $(LOCAL_HOST):$(LOCAL_SLOTS) -np 2 $(MPI_BIN) $(N) $(SEED)" \
+	    "-wdir $(REMOTE_DIR) -H $(REMOTE_HOST):$(REMOTE_SLOTS) -np 2 $(REMOTE_BIN) $(N) $(SEED)" \
 	    > $(APPFILE)
-	cd $(ROOT) && mpirun --mca btl tcp,self --mca btl_tcp_if_exclude lo,docker0 --app $(APPFILE)
+	cd $(ROOT) && $(MPIRUN) $(MPI_MCA) --app $(APPFILE)
 
 # 8 ranks: 4 local + 4 remote  (evenly split)
 run-mpi-multi-8: $(MPI_BIN) | $(RESULTS_DIR)
 	@echo "  -- Multi-node MPI: 4 local + 4 remote"
 	@printf "%s\n" \
-	    "-H localhost -np 4 $(MPI_BIN) $(N) $(SEED)" \
-	    "-H 172.15.70.230 -np 4 $(REMOTE_BIN) $(N) $(SEED)" \
+	    "-wdir $(ROOT) -H $(LOCAL_HOST):$(LOCAL_SLOTS) -np 4 $(MPI_BIN) $(N) $(SEED)" \
+	    "-wdir $(REMOTE_DIR) -H $(REMOTE_HOST):$(REMOTE_SLOTS) -np 4 $(REMOTE_BIN) $(N) $(SEED)" \
 	    > $(APPFILE)
-	cd $(ROOT) && mpirun --mca btl tcp,self --mca btl_tcp_if_exclude lo,docker0 --app $(APPFILE)
+	cd $(ROOT) && $(MPIRUN) $(MPI_MCA) --app $(APPFILE)
 
-# 16 ranks: 8 local + 8 remote  (max even split — limited by remote=8 slots)
+# 16 ranks: 8 local + 8 remote  (max even split)
 run-mpi-multi-16: $(MPI_BIN) | $(RESULTS_DIR)
 	@echo "  -- Multi-node MPI: 8 local + 8 remote"
 	@printf "%s\n" \
-	    "-H localhost -np 8 $(MPI_BIN) $(N) $(SEED)" \
-	    "-H 172.15.70.230 -np 8 $(REMOTE_BIN) $(N) $(SEED)" \
+	    "-wdir $(ROOT) -H $(LOCAL_HOST):$(LOCAL_SLOTS) -np 8 $(MPI_BIN) $(N) $(SEED)" \
+	    "-wdir $(REMOTE_DIR) -H $(REMOTE_HOST):$(REMOTE_SLOTS) -np 8 $(REMOTE_BIN) $(N) $(SEED)" \
 	    > $(APPFILE)
-	cd $(ROOT) && mpirun --mca btl tcp,self --mca btl_tcp_if_exclude lo,docker0 --app $(APPFILE)
+	cd $(ROOT) && $(MPIRUN) $(MPI_MCA) --app $(APPFILE)
 
-# 18 ranks: 10 local + 8 remote  (FULL CAPACITY — localhost=10, remote=8)
+# 18 ranks: 8 local + 10 remote  (FULL CAPACITY — localhost=8, remote=10)
 run-mpi-multi-18: $(MPI_BIN) | $(RESULTS_DIR)
-	@echo "  -- Multi-node MPI: 10 local + 8 remote (FULL CAPACITY)"
+	@echo "  -- Multi-node MPI: 8 local + 10 remote (FULL CAPACITY)"
 	@printf "%s\n" \
-	    "-H localhost -np 10 $(MPI_BIN) $(N) $(SEED)" \
-	    "-H 172.15.70.230 -np 8 $(REMOTE_BIN) $(N) $(SEED)" \
+	    "-wdir $(ROOT) -H $(LOCAL_HOST):$(LOCAL_SLOTS) -np 8 $(MPI_BIN) $(N) $(SEED)" \
+	    "-wdir $(REMOTE_DIR) -H $(REMOTE_HOST):$(REMOTE_SLOTS) -np 10 $(REMOTE_BIN) $(N) $(SEED)" \
 	    > $(APPFILE)
-	cd $(ROOT) && mpirun --mca btl tcp,self --mca btl_tcp_if_exclude lo,docker0 --app $(APPFILE)
+	cd $(ROOT) && $(MPIRUN) $(MPI_MCA) --app $(APPFILE)
 
 # ------------------------------------------------------------------------------
 # REMOTE MACHINE SETUP
@@ -218,10 +237,52 @@ deploy:
 	rsync -avz --delete $(ROOT)/random123/include/ $(REMOTE):$(REMOTE_DIR)/random123/include/
 	@echo "  OK  deploy done"
 
+deploy-mpi-runtime:
+	@echo "  Deploying matching OpenMPI runtime to $(REMOTE):$(REMOTE_MPI_PREFIX)..."
+	ssh $(REMOTE) "mkdir -p $(REMOTE_MPI_PREFIX)/bin $(REMOTE_MPI_PREFIX)/lib $(REMOTE_MPI_PREFIX)/include $(REMOTE_MPI_PREFIX)/share"
+	rsync -az \
+	    $(LOCAL_MPI_PREFIX)/bin/mpiCC $(LOCAL_MPI_PREFIX)/bin/mpic++ \
+	    $(LOCAL_MPI_PREFIX)/bin/mpicc $(LOCAL_MPI_PREFIX)/bin/mpicxx \
+	    $(LOCAL_MPI_PREFIX)/bin/mpiexec $(LOCAL_MPI_PREFIX)/bin/mpirun \
+	    $(LOCAL_MPI_PREFIX)/bin/ompi-clean $(LOCAL_MPI_PREFIX)/bin/ompi-server \
+	    $(LOCAL_MPI_PREFIX)/bin/ompi_info $(LOCAL_MPI_PREFIX)/bin/opal_wrapper \
+	    $(LOCAL_MPI_PREFIX)/bin/orte-clean $(LOCAL_MPI_PREFIX)/bin/orte-info \
+	    $(LOCAL_MPI_PREFIX)/bin/orte-server $(LOCAL_MPI_PREFIX)/bin/ortecc \
+	    $(LOCAL_MPI_PREFIX)/bin/orterun \
+	    $(REMOTE):$(REMOTE_MPI_PREFIX)/bin/
+	scp $(LOCAL_MPI_PREFIX)/bin/orted $(REMOTE):$(REMOTE_MPI_PREFIX)/bin/orted.real
+	rsync -az \
+	    $(LOCAL_MPI_PREFIX)/lib/libmca_common* \
+	    $(LOCAL_MPI_PREFIX)/lib/libmpi* \
+	    $(LOCAL_MPI_PREFIX)/lib/libompitrace* \
+	    $(LOCAL_MPI_PREFIX)/lib/libopen-pal* \
+	    $(LOCAL_MPI_PREFIX)/lib/libopen-rte* \
+	    $(LOCAL_MPI_PREFIX)/lib/ompi_monitoring_prof* \
+	    $(REMOTE):$(REMOTE_MPI_PREFIX)/lib/
+	rsync -az \
+	    $(LOCAL_MPI_PREFIX)/lib/openmpi \
+	    $(LOCAL_MPI_PREFIX)/lib/pmix \
+	    $(LOCAL_MPI_PREFIX)/lib/pkgconfig \
+	    $(REMOTE):$(REMOTE_MPI_PREFIX)/lib/
+	rsync -az $(LOCAL_MPI_PREFIX)/include/ $(REMOTE):$(REMOTE_MPI_PREFIX)/include/
+	rsync -az $(LOCAL_MPI_PREFIX)/share/openmpi $(REMOTE):$(REMOTE_MPI_PREFIX)/share/
+	@printf "%s\n" \
+	    "#!/bin/sh" \
+	    "prefix=$(REMOTE_MPI_PREFIX)" \
+	    'export OPAL_PREFIX="$$prefix"' \
+	    'export LD_LIBRARY_PATH="$$prefix/lib$${LD_LIBRARY_PATH:+:$$LD_LIBRARY_PATH}"' \
+	    'export PATH="$$prefix/bin:$$PATH"' \
+	    'exec "$$prefix/bin/orted.real" "$$@"' \
+	    > $(ROOT)/.orted-wrapper
+	scp $(ROOT)/.orted-wrapper $(REMOTE):$(REMOTE_MPI_PREFIX)/bin/orted
+	ssh $(REMOTE) "chmod +x $(REMOTE_MPI_PREFIX)/bin/orted $(REMOTE_MPI_PREFIX)/bin/orted.real"
+	rm -f $(ROOT)/.orted-wrapper
+	@echo "  OK  matching OpenMPI runtime deployed"
+
 # Compile mpi_threefry on the remote
-remote-compile: deploy
+remote-compile: deploy deploy-mpi-runtime
 	@echo "  Compiling mpi_threefry on $(REMOTE)..."
-	ssh $(REMOTE) "mpic++ -O2 -std=c++17 -I$(REMOTE_DIR)/random123/include -o $(REMOTE_DIR)/cpu_parallel/mpi_threefry $(REMOTE_DIR)/cpu_parallel/mpi_threefry.cpp && echo '  OK  remote compile done'"
+	ssh $(REMOTE) "OPAL_PREFIX=$(REMOTE_MPI_PREFIX) LD_LIBRARY_PATH=$(REMOTE_MPI_PREFIX)/lib PATH=$(REMOTE_MPI_PREFIX)/bin:\$$PATH $(REMOTE_MPI_PREFIX)/bin/mpic++ -O2 -std=c++17 -I$(REMOTE_DIR)/random123/include -o $(REMOTE_DIR)/cpu_parallel/mpi_threefry $(REMOTE_DIR)/cpu_parallel/mpi_threefry.cpp && echo '  OK  remote compile done'"
 
 # Pull CSVs from remote (rank 0 is local so usually not needed)
 sync-results:
@@ -265,10 +326,10 @@ help:
 	@echo "    make run-mpi-multi-4      4 ranks  (2 local + 2 remote)"
 	@echo "    make run-mpi-multi-8    8 ranks  (4 local + 4 remote)"
 	@echo "    make run-mpi-multi-16  16 ranks  (8 local + 8 remote, max even split)"
-	@echo "    make run-mpi-multi-18  18 ranks  (10 local + 8 remote, FULL CAPACITY)"
+	@echo "    make run-mpi-multi-18  18 ranks  (8 local + 10 remote, FULL CAPACITY)"
 	@echo ""
 	@echo "  REMOTE SETUP"
-	@echo "    make deploy               rsync source to rayyan@172.15.70.230"
+	@echo "    make deploy               rsync source to $(REMOTE)"
 	@echo "    make remote-compile       compile on remote"
 	@echo "    make sync-results         pull CSVs from remote"
 	@echo ""
