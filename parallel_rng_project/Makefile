@@ -66,7 +66,7 @@ endif
         run run-baseline run-mpi-1 run-mpi-2 run-mpi-4 run-mpi-8 run-mpi-10 \
         run-mpi-multi-2 run-mpi-multi-4 run-mpi-multi-8 run-mpi-multi-16 run-mpi-multi-18 \
         run-gpu run-bw run-roof run-plots \
-        deploy deploy-mpi-runtime remote-compile remote-bw sync-results hostfile run-remote clean clean-results help
+        deploy deploy-mpi-runtime remote-compile remote-bw run-mpi-remote-only sync-results hostfile run-remote run-tune clean clean-results help
 
 # ------------------------------------------------------------------------------
 all: compile
@@ -162,10 +162,33 @@ run-plots: | $(RESULTS_DIR)
 
 # Run all multi-node MPI experiments + hardware profiling + plots
 # Prerequisite: make deploy && make remote-compile
-run-remote: run-mpi-multi-2 run-mpi-multi-4 run-mpi-multi-8 run-mpi-multi-16 run-mpi-multi-18 remote-bw run-bw run-roof run-plots
+run-remote: run-mpi-multi-2 run-mpi-multi-4 run-mpi-multi-8 run-mpi-multi-16 run-mpi-multi-18 remote-bw run-mpi-remote-only run-bw run-roof run-plots
 	@echo ""
 	@echo "  All remote experiments complete."
 	@echo "  Ranks distributed: localhost=$(LOCAL_SLOTS) slots, $(REMOTE_HOST)=$(REMOTE_SLOTS) slots"
+
+# Throughput tuning: run full-capacity (18 ranks) at 3 increasing N to find peak utilisation
+run-tune: $(MPI_BIN) | $(RESULTS_DIR)
+	@echo "  ── Throughput Tuning: 18 ranks at N=10M / 50M / 100M ──────────────"
+	@echo "  [1/3] N=10,000,000"
+	@printf "%s\n" \
+	    "-wdir $(ROOT) -H $(LOCAL_HOST):$(LOCAL_SLOTS) -np 8 $(MPI_BIN) 10000000 $(SEED)" \
+	    "-wdir $(REMOTE_DIR) -H $(REMOTE_HOST):$(REMOTE_SLOTS) -np 10 $(REMOTE_BIN) 10000000 $(SEED)" \
+	    > $(APPFILE)
+	cd $(ROOT) && $(MPIRUN) $(MPI_MCA) --app $(APPFILE)
+	@echo "  [2/3] N=50,000,000"
+	@printf "%s\n" \
+	    "-wdir $(ROOT) -H $(LOCAL_HOST):$(LOCAL_SLOTS) -np 8 $(MPI_BIN) 50000000 $(SEED)" \
+	    "-wdir $(REMOTE_DIR) -H $(REMOTE_HOST):$(REMOTE_SLOTS) -np 10 $(REMOTE_BIN) 50000000 $(SEED)" \
+	    > $(APPFILE)
+	cd $(ROOT) && $(MPIRUN) $(MPI_MCA) --app $(APPFILE)
+	@echo "  [3/3] N=100,000,000"
+	@printf "%s\n" \
+	    "-wdir $(ROOT) -H $(LOCAL_HOST):$(LOCAL_SLOTS) -np 8 $(MPI_BIN) 100000000 $(SEED)" \
+	    "-wdir $(REMOTE_DIR) -H $(REMOTE_HOST):$(REMOTE_SLOTS) -np 10 $(REMOTE_BIN) 100000000 $(SEED)" \
+	    > $(APPFILE)
+	cd $(ROOT) && $(MPIRUN) $(MPI_MCA) --app $(APPFILE)
+	@echo "  ── Tuning complete. Check results/mpi_results.csv ──────────────────"
 
 # ------------------------------------------------------------------------------
 # MULTI-NODE MPI  (local + $(REMOTE))
@@ -298,6 +321,19 @@ remote-bw:
 	ssh $(REMOTE) "cd $(REMOTE_DIR) && ./hardware_profiling/bandwidth_test"
 	scp $(REMOTE):$(REMOTE_DIR)/results/hardware_profile.csv $(RESULTS_DIR)/hardware_profile_remote.csv
 	@echo "  OK  remote hardware profile → results/hardware_profile_remote.csv"
+
+# Run MPI experiments locally on the remote machine and pull results as mpi_results_remote.csv
+# This documents the remote machine's standalone MPI performance.
+run-mpi-remote-only: | $(RESULTS_DIR)
+	@echo "  -- Remote-only MPI: running 1/2/4/8/10 processes on $(REMOTE)"
+	ssh $(REMOTE) "rm -f $(REMOTE_DIR)/results/mpi_results.csv"
+	ssh $(REMOTE) "cd $(REMOTE_DIR) && OPAL_PREFIX=$(REMOTE_MPI_PREFIX) LD_LIBRARY_PATH=$(REMOTE_MPI_PREFIX)/lib PATH=$(REMOTE_MPI_PREFIX)/bin:$$PATH $(REMOTE_MPI_PREFIX)/bin/mpirun --oversubscribe -np 1  $(REMOTE_BIN) $(N) $(SEED)"
+	ssh $(REMOTE) "cd $(REMOTE_DIR) && OPAL_PREFIX=$(REMOTE_MPI_PREFIX) LD_LIBRARY_PATH=$(REMOTE_MPI_PREFIX)/lib PATH=$(REMOTE_MPI_PREFIX)/bin:$$PATH $(REMOTE_MPI_PREFIX)/bin/mpirun --oversubscribe -np 2  $(REMOTE_BIN) $(N) $(SEED)"
+	ssh $(REMOTE) "cd $(REMOTE_DIR) && OPAL_PREFIX=$(REMOTE_MPI_PREFIX) LD_LIBRARY_PATH=$(REMOTE_MPI_PREFIX)/lib PATH=$(REMOTE_MPI_PREFIX)/bin:$$PATH $(REMOTE_MPI_PREFIX)/bin/mpirun --oversubscribe -np 4  $(REMOTE_BIN) $(N) $(SEED)"
+	ssh $(REMOTE) "cd $(REMOTE_DIR) && OPAL_PREFIX=$(REMOTE_MPI_PREFIX) LD_LIBRARY_PATH=$(REMOTE_MPI_PREFIX)/lib PATH=$(REMOTE_MPI_PREFIX)/bin:$$PATH $(REMOTE_MPI_PREFIX)/bin/mpirun --oversubscribe -np 8  $(REMOTE_BIN) $(N) $(SEED)"
+	ssh $(REMOTE) "cd $(REMOTE_DIR) && OPAL_PREFIX=$(REMOTE_MPI_PREFIX) LD_LIBRARY_PATH=$(REMOTE_MPI_PREFIX)/lib PATH=$(REMOTE_MPI_PREFIX)/bin:$$PATH $(REMOTE_MPI_PREFIX)/bin/mpirun --oversubscribe -np 10 $(REMOTE_BIN) $(N) $(SEED)"
+	scp $(REMOTE):$(REMOTE_DIR)/results/mpi_results.csv $(RESULTS_DIR)/mpi_results_remote.csv
+	@echo "  OK  remote MPI results → results/mpi_results_remote.csv"
 
 # ------------------------------------------------------------------------------
 # CLEAN

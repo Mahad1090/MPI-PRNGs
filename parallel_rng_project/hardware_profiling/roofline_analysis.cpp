@@ -485,22 +485,38 @@ int main()
     // ── Read All Result CSV Files ─────────────────────────────────────────────
     BaselineResult         baseline      = read_baseline_csv("results/baseline_results.csv");
     vector<MpiResult>      mpi_rows      = read_mpi_csv("results/mpi_results.csv");
+    vector<MpiResult>      mpi_remote    = read_mpi_csv("results/mpi_results_remote.csv");
     GpuResult              gpu_result    = read_gpu_csv("results/gpu_results.csv");
     HardwareProfile        hw_local      = read_hardware_profile_csv("results/hardware_profile.csv");
     HardwareProfile        hw_remote     = read_hardware_profile_csv("results/hardware_profile_remote.csv");
 
-    // Sort MPI results by process count for ordered table display
-    sort(mpi_rows.begin(), mpi_rows.end(),
-        [](const MpiResult& a, const MpiResult& b) {
+    auto sort_mpi = [](vector<MpiResult>& v) {
+        sort(v.begin(), v.end(), [](const MpiResult& a, const MpiResult& b) {
             return a.num_processes < b.num_processes;
         });
+    };
+    sort_mpi(mpi_rows);
+    sort_mpi(mpi_remote);
 
     // ── Print to Terminal ─────────────────────────────────────────────────────
     print_summary_table(baseline, mpi_rows, gpu_result, cout);
     print_hardware_profiles(hw_local, hw_remote, cout);
+
+    cout << "  [Local machine MPI performance]\n";
     print_utilization_analysis(baseline, mpi_rows, hw_local, hw_remote, cout);
+
+    if (!mpi_remote.empty()) {
+        cout << "  [Remote machine MPI performance]\n";
+        print_utilization_analysis(baseline, mpi_remote, hw_remote, hw_local, cout);
+    }
+
     print_roofline_analysis(hw_local, cout);
     print_scaling_analysis(mpi_rows, cout);
+
+    if (!mpi_remote.empty()) {
+        cout << "  [Remote machine scaling]\n";
+        print_scaling_analysis(mpi_remote, cout);
+    }
 
     // ── Save Full Analysis to Text File ───────────────────────────────────────
     const string results_directory = "results";
@@ -527,11 +543,24 @@ int main()
     report_file << "    2. GPU acceleration using Philox-4x32-10 via CUDA\n";
     report_file << "  Speedup numbers show improvement over the single-core Threefry baseline.\n\n";
 
-    print_summary_table        (baseline, mpi_rows, gpu_result, report_file);
-    print_hardware_profiles    (hw_local, hw_remote, report_file);
-    print_utilization_analysis (baseline, mpi_rows, hw_local, hw_remote, report_file);
-    print_roofline_analysis    (hw_local, report_file);
-    print_scaling_analysis     (mpi_rows, report_file);
+    print_summary_table     (baseline, mpi_rows, gpu_result, report_file);
+    print_hardware_profiles (hw_local, hw_remote, report_file);
+
+    report_file << "  [Local machine MPI performance]\n";
+    print_utilization_analysis(baseline, mpi_rows, hw_local, hw_remote, report_file);
+
+    if (!mpi_remote.empty()) {
+        report_file << "  [Remote machine MPI performance]\n";
+        print_utilization_analysis(baseline, mpi_remote, hw_remote, hw_local, report_file);
+    }
+
+    print_roofline_analysis(hw_local, report_file);
+    print_scaling_analysis (mpi_rows,  report_file);
+
+    if (!mpi_remote.empty()) {
+        report_file << "  [Remote machine scaling]\n";
+        print_scaling_analysis(mpi_remote, report_file);
+    }
 
     report_file << "── Key Conclusions ──────────────────────────────────────────────\n\n";
     report_file << "  1. Counter-based PRNGs (Threefry, Philox) are embarrassingly\n";
