@@ -1,0 +1,2 @@
+-H localhost -np 1 /home/mahad1090/Desktop/MPI-PRNGs/parallel_rng_project/cpu_parallel/mpi_threefry 10000000 42
+-H 172.15.70.230 -np 1 /home/rayyan/parallel_rng_project/cpu_parallel/mpi_threefry 10000000 42

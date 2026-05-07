@@ -39,15 +39,15 @@ REMOTE_HOME  := /home/rayyan
 REMOTE_DIR   := $(REMOTE_HOME)/parallel_rng_project
 REMOTE_BIN   := $(REMOTE_DIR)/cpu_parallel/mpi_threefry
 LOCAL_SLOTS  := 10
-REMOTE_SLOTS := 4
+REMOTE_SLOTS := 8
 APPFILE      := $(ROOT)/mpi_appfile
 HOSTFILE     := $(ROOT)/hostfile
 
 .PHONY: all compile compile-baseline compile-mpi compile-gpu compile-bw compile-roof \
         run run-baseline run-mpi-1 run-mpi-2 run-mpi-4 run-mpi-8 run-mpi-10 \
-        run-mpi-multi-2 run-mpi-multi-4 run-mpi-multi-8 run-mpi-multi-10 run-mpi-multi-20 \
+        run-mpi-multi-2 run-mpi-multi-4 run-mpi-multi-8 run-mpi-multi-16 run-mpi-multi-18 \
         run-gpu run-bw run-roof run-plots \
-        deploy remote-compile sync-results hostfile clean clean-results help
+        deploy remote-compile sync-results hostfile run-remote clean clean-results help
 
 # ------------------------------------------------------------------------------
 all: compile
@@ -141,6 +141,13 @@ run-plots: | $(RESULTS_DIR)
 	@echo "  -- Generating Plots"
 	python3 $(ROOT)/plots/generate_plots.py
 
+# Run all multi-node MPI experiments + hardware profiling + plots
+# Prerequisite: make deploy && make remote-compile
+run-remote: run-mpi-multi-2 run-mpi-multi-4 run-mpi-multi-8 run-mpi-multi-16 run-mpi-multi-18 run-bw run-roof run-plots
+	@echo ""
+	@echo "  All remote experiments complete."
+	@echo "  Ranks distributed: localhost=10 slots, 172.15.70.230=8 slots"
+
 # ------------------------------------------------------------------------------
 # MULTI-NODE MPI  (local + rayyan@172.15.70.230)
 #
@@ -161,7 +168,7 @@ run-mpi-multi-2: $(MPI_BIN) | $(RESULTS_DIR)
 	    "-H localhost -np 1 $(MPI_BIN) $(N) $(SEED)" \
 	    "-H 172.15.70.230 -np 1 $(REMOTE_BIN) $(N) $(SEED)" \
 	    > $(APPFILE)
-	cd $(ROOT) && mpirun --app $(APPFILE)
+	cd $(ROOT) && mpirun --mca btl tcp,self --mca btl_tcp_if_exclude lo,docker0 --app $(APPFILE)
 
 # 4 ranks: 2 local + 2 remote
 run-mpi-multi-4: $(MPI_BIN) | $(RESULTS_DIR)
@@ -170,34 +177,34 @@ run-mpi-multi-4: $(MPI_BIN) | $(RESULTS_DIR)
 	    "-H localhost -np 2 $(MPI_BIN) $(N) $(SEED)" \
 	    "-H 172.15.70.230 -np 2 $(REMOTE_BIN) $(N) $(SEED)" \
 	    > $(APPFILE)
-	cd $(ROOT) && mpirun --app $(APPFILE)
+	cd $(ROOT) && mpirun --mca btl tcp,self --mca btl_tcp_if_exclude lo,docker0 --app $(APPFILE)
 
-# 8 ranks: 4 local + 4 remote
+# 8 ranks: 4 local + 4 remote  (evenly split)
 run-mpi-multi-8: $(MPI_BIN) | $(RESULTS_DIR)
 	@echo "  -- Multi-node MPI: 4 local + 4 remote"
 	@printf "%s\n" \
 	    "-H localhost -np 4 $(MPI_BIN) $(N) $(SEED)" \
 	    "-H 172.15.70.230 -np 4 $(REMOTE_BIN) $(N) $(SEED)" \
 	    > $(APPFILE)
-	cd $(ROOT) && mpirun --app $(APPFILE)
+	cd $(ROOT) && mpirun --mca btl tcp,self --mca btl_tcp_if_exclude lo,docker0 --app $(APPFILE)
 
-# 10 ranks: 5 local + 5 remote
-run-mpi-multi-10: $(MPI_BIN) | $(RESULTS_DIR)
-	@echo "  -- Multi-node MPI: 5 local + 5 remote"
+# 16 ranks: 8 local + 8 remote  (max even split — limited by remote=8 slots)
+run-mpi-multi-16: $(MPI_BIN) | $(RESULTS_DIR)
+	@echo "  -- Multi-node MPI: 8 local + 8 remote"
 	@printf "%s\n" \
-	    "-H localhost -np 5 $(MPI_BIN) $(N) $(SEED)" \
-	    "-H 172.15.70.230 -np 5 $(REMOTE_BIN) $(N) $(SEED)" \
+	    "-H localhost -np 8 $(MPI_BIN) $(N) $(SEED)" \
+	    "-H 172.15.70.230 -np 8 $(REMOTE_BIN) $(N) $(SEED)" \
 	    > $(APPFILE)
-	cd $(ROOT) && mpirun --app $(APPFILE)
+	cd $(ROOT) && mpirun --mca btl tcp,self --mca btl_tcp_if_exclude lo,docker0 --app $(APPFILE)
 
-# 20 ranks: 10 local + 10 remote  (full capacity, LOCAL_SLOTS=10 each)
-run-mpi-multi-20: $(MPI_BIN) | $(RESULTS_DIR)
-	@echo "  -- Multi-node MPI: 10 local + 10 remote"
+# 18 ranks: 10 local + 8 remote  (FULL CAPACITY — localhost=10, remote=8)
+run-mpi-multi-18: $(MPI_BIN) | $(RESULTS_DIR)
+	@echo "  -- Multi-node MPI: 10 local + 8 remote (FULL CAPACITY)"
 	@printf "%s\n" \
 	    "-H localhost -np 10 $(MPI_BIN) $(N) $(SEED)" \
-	    "-H 172.15.70.230 -np 10 $(REMOTE_BIN) $(N) $(SEED)" \
+	    "-H 172.15.70.230 -np 8 $(REMOTE_BIN) $(N) $(SEED)" \
 	    > $(APPFILE)
-	cd $(ROOT) && mpirun --app $(APPFILE)
+	cd $(ROOT) && mpirun --mca btl tcp,self --mca btl_tcp_if_exclude lo,docker0 --app $(APPFILE)
 
 # ------------------------------------------------------------------------------
 # REMOTE MACHINE SETUP
@@ -257,8 +264,8 @@ help:
 	@echo "    make run-mpi-multi-2      2 ranks  (1 local + 1 remote)"
 	@echo "    make run-mpi-multi-4      4 ranks  (2 local + 2 remote)"
 	@echo "    make run-mpi-multi-8    8 ranks  (4 local + 4 remote)"
-	@echo "    make run-mpi-multi-10  10 ranks  (5 local + 5 remote)"
-	@echo "    make run-mpi-multi-20  20 ranks  (10+10, full LOCAL_SLOTS capacity)"
+	@echo "    make run-mpi-multi-16  16 ranks  (8 local + 8 remote, max even split)"
+	@echo "    make run-mpi-multi-18  18 ranks  (10 local + 8 remote, FULL CAPACITY)"
 	@echo ""
 	@echo "  REMOTE SETUP"
 	@echo "    make deploy               rsync source to rayyan@172.15.70.230"
