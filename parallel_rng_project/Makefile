@@ -96,7 +96,7 @@ $(ROOF_BIN): $(ROOT)/hardware_profiling/roofline_analysis.cpp
 $(RESULTS_DIR):
 	mkdir -p $(RESULTS_DIR)
 
-run: run-baseline run-mpi-1 run-mpi-2 run-mpi-4 run-mpi-8 run-bw run-roof run-plots
+run: run-baseline run-mpi-1 run-mpi-2 run-mpi-4 run-mpi-8 run-mpi-10 run-bw run-roof run-plots
 	@echo ""
 	@echo "  All local experiments complete."
 
