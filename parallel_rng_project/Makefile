@@ -29,7 +29,7 @@ BW_BIN       := $(ROOT)/hardware_profiling/bandwidth_test
 ROOF_BIN     := $(ROOT)/hardware_profiling/roofline_analysis
 
 # Override on command line:  make run-mpi-4 N=50000000
-N    := 10000000
+N    := 300000000
 SEED := 42
 
 # Remote machine — adjust these if needed

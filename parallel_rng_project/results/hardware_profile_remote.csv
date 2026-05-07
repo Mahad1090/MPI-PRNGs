@@ -1,0 +1,8 @@
+metric,value,unit
+peak_read_bandwidth,13.849047,GB/s
+peak_write_bandwidth,10.822579,GB/s
+peak_copy_bandwidth,15.303060,GB/s
+peak_compute,5.008297,GFLOPS
+ridge_point,0.327274,FLOP/byte
+threefry_arithmetic_intensity,2.500000,FLOP/byte
+philox_arithmetic_intensity,1.000000,FLOP/byte

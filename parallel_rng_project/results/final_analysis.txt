@@ -18,39 +18,12 @@
 ╠══════════════════════════════════════════════════════════════════╣
 ║ Implementation     │ N          │ Time(s)  │ GB/s   │ Speedup   ║
 ╠══════════════════════════════════════════════════════════════════╣
-║ Single Core TF     │ 10,000,000 │ 0.052526 │ 1.5230 │ 1.0000x   ║
-║ MPI 1 process      │ 10,000,000 │ 0.049334 │ 1.6215 │ 0.9938x   ║
-║ MPI 1 process      │ 10,000,000 │ 0.043369 │ 1.8446 │ 1.0605x   ║
-║ MPI 1 process      │ 10,000,000 │ 0.043091 │ 1.8565 │ 1.2189x   ║
-║ MPI 2 processes    │ 10,000,000 │ 0.036075 │ 2.2176 │ 1.3591x   ║
-║ MPI 2 processes    │ 10,000,000 │ 0.021344 │ 3.7481 │ 2.4609x   ║
-║ MPI 2 processes    │ 10,000,000 │ 0.021679 │ 3.6902 │ 2.4229x   ║
-║ MPI 2 processes    │ 10,000,000 │ 0.021660 │ 3.6934 │ 2.4250x   ║
-║ MPI 2 processes    │ 10,000,000 │ 0.021384 │ 3.7411 │ 2.4563x   ║
-║ MPI 2 processes    │ 10,000,000 │ 0.023430 │ 3.4144 │ 2.2418x   ║
-║ MPI 2 processes    │ 10,000,000 │ 0.024089 │ 3.3210 │ 2.1804x   ║
-║ MPI 2 processes    │ 10,000,000 │ 0.025573 │ 3.1283 │ 1.7986x   ║
-║ MPI 4 processes    │ 10,000,000 │ 0.026098 │ 3.0653 │ 2.0126x   ║
-║ MPI 4 processes    │ 10,000,000 │ 0.010829 │ 7.3873 │ 4.8503x   ║
-║ MPI 4 processes    │ 10,000,000 │ 0.028173 │ 2.8395 │ 1.7402x   ║
-║ MPI 4 processes    │ 10,000,000 │ 0.032697 │ 2.4467 │ 1.4067x   ║
-║ MPI 4 processes    │ 10,000,000 │ 0.010787 │ 7.4160 │ 4.8692x   ║
-║ MPI 4 processes    │ 10,000,000 │ 0.010803 │ 7.4050 │ 4.8619x   ║
-║ MPI 8 processes    │ 10,000,000 │ 0.016057 │ 4.9821 │ 2.8644x   ║
-║ MPI 8 processes    │ 10,000,000 │ 0.007820 │ 10.230 │ 6.7170x   ║
-║ MPI 8 processes    │ 10,000,000 │ 0.008052 │ 9.9359 │ 6.5236x   ║
-║ MPI 8 processes    │ 10,000,000 │ 0.015308 │ 5.2259 │ 3.2028x   ║
-║ MPI 8 processes    │ 10,000,000 │ 0.007608 │ 10.515 │ 6.9042x   ║
-║ MPI 8 processes    │ 10,000,000 │ 0.019224 │ 4.1615 │ 2.7323x   ║
-║ MPI 10 processes   │ 10,000,000 │ 0.013696 │ 5.8411 │ 3.3583x   ║
-║ MPI 10 processes   │ 10,000,000 │ 0.013745 │ 5.8201 │ 3.5670x   ║
-║ MPI 10 processes   │ 10,000,000 │ 0.020479 │ 3.9064 │ 2.5648x   ║
-║ MPI 16 processes   │ 10,000,000 │ 0.007727 │ 10.353 │ 6.7980x   ║
-║ MPI 16 processes   │ 10,000,000 │ 0.010434 │ 7.6672 │ 5.0341x   ║
-║ MPI 16 processes   │ 10,000,000 │ 0.010548 │ 7.5845 │ 4.9797x   ║
-║ MPI 18 processes   │ 10,000,000 │ 0.006722 │ 11.900 │ 7.8138x   ║
-║ MPI 18 processes   │ 10,000,000 │ 0.006697 │ 11.946 │ 7.8437x   ║
-║ MPI 18 processes   │ 10,000,000 │ 0.006003 │ 13.327 │ 8.7502x   ║
+║ Single Core TF     │ 300,000,00 │ 0.786403 │ 3.0518 │ 1.0000x   ║
+║ MPI 2 processes    │ 300,000,00 │ 0.425852 │ 5.6357 │ 1.8466x   ║
+║ MPI 4 processes    │ 300,000,00 │ 0.260559 │ 9.2109 │ 3.0181x   ║
+║ MPI 8 processes    │ 300,000,00 │ 0.160441 │ 14.958 │ 4.9015x   ║
+║ MPI 16 processes   │ 300,000,00 │ 0.161736 │ 14.839 │ 4.8622x   ║
+║ MPI 18 processes   │ 300,000,00 │ 0.199785 │ 12.012 │ 3.9362x   ║
 ║ GPU Philox 1T      │ (no data)  │          │        │           ║
 ║ GPU Philox Parallel│ (no data)  │          │        │           ║
 ╚══════════════════════════════════════════════════════════════════╝
@@ -58,65 +31,66 @@
 ── Hardware Profiles ─────────────────────────────────────────────
 
   Local machine:
-    Peak copy BW  : 9.89 GB/s
+    Peak copy BW  : 10.04 GB/s
     Peak compute  : 5.76 GFLOPS
-    Ridge point   : 0.582 FLOP/byte
+    Ridge point   : 0.574 FLOP/byte
     Threefry bound: COMPUTE-BOUND (AI=2.50)
 
   Remote machine:
-    [no data]
+    Peak copy BW  : 15.30 GB/s
+    Peak compute  : 5.01 GFLOPS
+    Ridge point   : 0.327 FLOP/byte
+    Threefry bound: COMPUTE-BOUND (AI=2.50)
 
+  [Local machine MPI performance]
 ── Hardware Utilisation ──────────────────────────────────────────
 
   Threefry AI = 2.50 FLOP/byte  (COMPUTE-BOUND: ceiling = peak_GFLOPS / AI)
     Local  ceiling per rank: 5.76 / 2.50 = 2.30 GB/s
+    Remote ceiling per rank: 5.01 / 2.50 = 2.00 GB/s
 
-  Implementation        P   GB/s     GB/s/rk  %Local   
-  -----------------------------------------------------
-  Single Core TF        1   1.52     1.52     66.2%    
-  MPI 1 process         1   1.62     1.62     70.4%    
-  MPI 1 process         1   1.84     1.84     80.1%    
-  MPI 1 process         1   1.86     1.86     80.6%    
-  MPI 2 processes       2   2.22     1.11     48.2%    
-  MPI 2 processes       2   3.75     1.87     81.4%    
-  MPI 2 processes       2   3.69     1.85     80.1%    
-  MPI 2 processes       2   3.69     1.85     80.2%    
-  MPI 2 processes       2   3.74     1.87     81.2%    
-  MPI 2 processes       2   3.41     1.71     74.2%    
-  MPI 2 processes       2   3.32     1.66     72.1%    
-  MPI 2 processes       2   3.13     1.56     67.9%    
-  MPI 4 processes       4   3.07     0.77     33.3%    
-  MPI 4 processes       4   7.39     1.85     80.2%    
-  MPI 4 processes       4   2.84     0.71     30.8%    
-  MPI 4 processes       4   2.45     0.61     26.6%    
-  MPI 4 processes       4   7.42     1.85     80.5%    
-  MPI 4 processes       4   7.41     1.85     80.4%    
-  MPI 8 processes       8   4.98     0.62     27.0%    
-  MPI 8 processes       8   10.23    1.28     55.5%    
-  MPI 8 processes       8   9.94     1.24     53.9%    
-  MPI 8 processes       8   5.23     0.65     28.4%    
-  MPI 8 processes       8   10.52    1.31     57.1%    
-  MPI 8 processes       8   4.16     0.52     22.6%    
-  MPI 10 processes      10  5.84     0.58     25.4%    
-  MPI 10 processes      10  5.82     0.58     25.3%    
-  MPI 10 processes      10  3.91     0.39     17.0%    
-  MPI 16 processes      16  10.35    0.65     28.1%    
-  MPI 16 processes      16  7.67     0.48     20.8%    
-  MPI 16 processes      16  7.58     0.47     20.6%    
-  MPI 18 processes      18  11.90    0.66     28.7%    
-  MPI 18 processes      18  11.95    0.66     28.8%    
-  MPI 18 processes      18  13.33    0.74     32.2%    
-  -----------------------------------------------------
+  Implementation        P   GB/s     GB/s/rk  %Local   %Remote  
+  --------------------------------------------------------------
+  Single Core TF        1   3.05     3.05     132.5%   152.3%   
+  MPI 2 processes       2   5.64     2.82     122.3%   140.7%   
+  MPI 4 processes       4   9.21     2.30     99.9%    114.9%   
+  MPI 8 processes       8   14.96    1.87     81.2%    93.3%    
+  MPI 16 processes      16  14.84    0.93     40.3%    46.3%    
+  MPI 18 processes      18  12.01    0.67     29.0%    33.3%    
+  --------------------------------------------------------------
 
   GB/s/rk = total throughput / process count (per-rank throughput).
   %Local  = (GB/s/rk × AI) / local peak_compute × 100.
+  %Remote = same formula using remote machine peak_compute.
+  Multi-node MPI rows span both machines; per-rank % is approximate.
+
+  [Remote machine MPI performance]
+── Hardware Utilisation ──────────────────────────────────────────
+
+  Threefry AI = 2.50 FLOP/byte  (COMPUTE-BOUND: ceiling = peak_GFLOPS / AI)
+    Local  ceiling per rank: 5.01 / 2.50 = 2.00 GB/s
+    Remote ceiling per rank: 5.76 / 2.50 = 2.30 GB/s
+
+  Implementation        P   GB/s     GB/s/rk  %Local   %Remote  
+  --------------------------------------------------------------
+  Single Core TF        1   3.05     3.05     152.3%   132.5%   
+  MPI 1 process         1   3.63     3.63     181.3%   157.6%   
+  MPI 2 processes       2   6.74     3.37     168.3%   146.4%   
+  MPI 4 processes       4   9.06     2.26     113.0%   98.3%    
+  MPI 8 processes       8   12.53    1.57     78.2%    68.0%    
+  MPI 10 processes      10  12.28    1.23     61.3%    53.3%    
+  --------------------------------------------------------------
+
+  GB/s/rk = total throughput / process count (per-rank throughput).
+  %Local  = (GB/s/rk × AI) / local peak_compute × 100.
+  %Remote = same formula using remote machine peak_compute.
   Multi-node MPI rows span both machines; per-rank % is approximate.
 
 ── Roofline Analysis ─────────────────────────────────────────────
 
-  Peak memory bandwidth (STREAM copy) : 9.89 GB/s
+  Peak memory bandwidth (STREAM copy) : 10.04 GB/s
   Peak compute (FMA)                  : 5.76 GFLOPS
-  Ridge point                         : 0.582 FLOP/byte
+  Ridge point                         : 0.574 FLOP/byte
 
   Single Core Threefry-4x64-20 (Authors Baseline):
     Arithmetic Intensity  = 2.50 FLOP/byte
@@ -141,38 +115,30 @@
 
   Processes Actual SpeedupIdeal Speedup Efficiency  Deviation
   ------------------------------------------------------------
-  1         0.9938x       1.00x         99.38%      Near ideal
-  1         1.0605x       1.00x         106.0%      Super-linear (cache effects)
-  1         1.2189x       1.00x         121.8%      Super-linear (cache effects)
-  2         1.3591x       2.00x         67.95%      Significant loss (MPI overhead)
-  2         2.4609x       2.00x         123.0%      Super-linear (cache effects)
-  2         2.4229x       2.00x         121.1%      Super-linear (cache effects)
-  2         2.4250x       2.00x         121.2%      Super-linear (cache effects)
-  2         2.4563x       2.00x         122.8%      Super-linear (cache effects)
-  2         2.2418x       2.00x         112.0%      Super-linear (cache effects)
-  2         2.1804x       2.00x         109.0%      Super-linear (cache effects)
-  2         1.7986x       2.00x         89.93%      Minor overhead
-  4         2.0126x       4.00x         50.31%      Significant loss (MPI overhead)
-  4         4.8503x       4.00x         121.2%      Super-linear (cache effects)
-  4         1.7402x       4.00x         43.50%      Significant loss (MPI overhead)
-  4         1.4067x       4.00x         35.16%      Significant loss (MPI overhead)
-  4         4.8692x       4.00x         121.7%      Super-linear (cache effects)
-  4         4.8619x       4.00x         121.5%      Super-linear (cache effects)
-  8         2.8644x       8.00x         35.80%      Significant loss (MPI overhead)
-  8         6.7170x       8.00x         83.96%      Minor overhead
-  8         6.5236x       8.00x         81.54%      Minor overhead
-  8         3.2028x       8.00x         40.03%      Significant loss (MPI overhead)
-  8         6.9042x       8.00x         86.30%      Minor overhead
-  8         2.7323x       8.00x         34.15%      Significant loss (MPI overhead)
-  10        3.3583x       10.0x         33.58%      Significant loss (MPI overhead)
-  10        3.5670x       10.0x         35.67%      Significant loss (MPI overhead)
-  10        2.5648x       10.0x         25.64%      Significant loss (MPI overhead)
-  16        6.7980x       16.0x         42.48%      Significant loss (MPI overhead)
-  16        5.0341x       16.0x         31.46%      Significant loss (MPI overhead)
-  16        4.9797x       16.0x         31.12%      Significant loss (MPI overhead)
-  18        7.8138x       18.0x         43.41%      Significant loss (MPI overhead)
-  18        7.8437x       18.0x         43.57%      Significant loss (MPI overhead)
-  18        8.7502x       18.0x         48.61%      Significant loss (MPI overhead)
+  2         1.8466x       2.00x         92.33%      Minor overhead
+  4         3.0181x       4.00x         75.45%      Significant loss (MPI overhead)
+  8         4.9015x       8.00x         61.26%      Significant loss (MPI overhead)
+  16        4.8622x       16.0x         30.38%      Significant loss (MPI overhead)
+  18        3.9362x       18.0x         21.86%      Significant loss (MPI overhead)
+
+  Interpretation:
+  • Efficiency > 90%: excellent scaling, MPI overhead is minimal.
+  • Efficiency < 70%: excessive synchronization or load imbalance.
+  • Threefry has zero communication during generation — any overhead
+    comes only from MPI_Init, MPI_Barrier, and MPI_Reduce.
+  • Super-linear speedup is possible if per-rank data fits in cache
+    while the full N does not (cache-size effect).
+
+  [Remote machine scaling]
+── MPI Scaling Analysis ──────────────────────────────────────────
+
+  Processes Actual SpeedupIdeal Speedup Efficiency  Deviation
+  ------------------------------------------------------------
+  1         0.9969x       1.00x         99.69%      Near ideal
+  2         1.8517x       2.00x         92.58%      Minor overhead
+  4         2.4862x       4.00x         62.15%      Significant loss (MPI overhead)
+  8         3.4392x       8.00x         42.99%      Significant loss (MPI overhead)
+  10        3.3728x       10.0x         33.72%      Significant loss (MPI overhead)
 
   Interpretation:
   • Efficiency > 90%: excellent scaling, MPI overhead is minimal.
