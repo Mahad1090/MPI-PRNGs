@@ -1,0 +1,2 @@
+N,gpu_baseline_time_ms,gpu_baseline_throughput_GBps,gpu_parallel_time_ms,gpu_parallel_throughput_GBps,gpu_speedup_vs_single_thread,cpu_threefry_throughput_GBps,num_cuda_threads
+300000000,10781.655273,0.111300,9.365184,128.134164,1151.248653,1.647666,75000064

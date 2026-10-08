@@ -33,7 +33,8 @@ gets you on real hardware.
 | `gpu_parallel/cuda_philox.cu` | Philox-4x32-10 with one CUDA thread per Philox call (4 outputs each), in a grid-stride loop. Its speedup is measured against the same kernel launched as `<<<1, 1>>>` on the same GPU, so CPU-vs-GPU hardware differences don't inflate the number. |
 | `hardware_profiling/bandwidth_test.cpp` | Read, write and copy bandwidth over 512 MB arrays, plus an FMA throughput ceiling, used to place the generators on a roofline. |
 | `hardware_profiling/roofline_analysis.cpp` | Combines every CSV in `results/` into `results/final_analysis.txt`. |
-| `plots/generate_plots.py` | Turns the CSVs into the figures below. |
+| `plots/generate_plots.py` | Turns the CSVs into the CPU/MPI figures below. |
+| `plots/generate_gpu_plots.py` | Builds the T4 figures from `results/gpu_results_t4_sweep.csv`. |
 
 Every generated value is written to memory, so the benchmarks measure
 producing a usable buffer of random numbers, not just running the cipher.
@@ -98,10 +99,47 @@ the "compute-bound" label that `roofline_analysis` prints for Threefry
 shouldn't be taken at face value. The write-bandwidth numbers above explain
 the scaling better.
 
-**GPU:** the CUDA implementation is complete, but no GPU results are committed
-yet. Run `make compile-gpu run-gpu` on a machine with `nvcc` to produce
-`results/gpu_results.csv`. The roofline analysis and plots pick it up
-automatically.
+### GPU: Tesla T4
+
+`cuda_philox.cu` was run on a Tesla T4 (40 SMs, Google Colab) at three sizes.
+The notebook is in
+[`gpu_parallel/t4_colab_run.ipynb`](parallel_rng_project/gpu_parallel/t4_colab_run.ipynb),
+and the data is in
+[`results/gpu_results_t4_sweep.csv`](parallel_rng_project/results/gpu_results_t4_sweep.csv).
+
+| N | 1 thread (ms) | Full grid (ms) | CUDA threads | Throughput (GB/s) | Speedup vs 1 thread |
+|---:|---:|---:|---:|---:|---:|
+| 10M | 361.7 | 0.293 | 2,500,096 | 136.3 | 1,233× |
+| 100M | 3,598.3 | 3.031 | 25,000,192 | 132.0 | 1,187× |
+| 300M | 10,781.7 | 9.365 | 75,000,064 | 128.1 | 1,151× |
+
+![T4: one thread vs full grid](parallel_rng_project/plots/gpu_t4_single_vs_grid.png)
+
+The speedup compares the same kernel on the same GPU with one thread and with
+one thread per Philox call, so it measures parallelism alone. A single GPU
+thread is far slower than a CPU core (0.11 GB/s against the lab CPU's 3.05 GB/s),
+so this number is not a GPU-vs-CPU comparison.
+
+![T4 throughput vs N](parallel_rng_project/plots/gpu_t4_throughput_vs_N.png)
+
+Throughput is flat at 128–136 GB/s across a 30× range of N, which is 40–43%
+of the T4's 320 GB/s spec bandwidth. Nsight Compute on the 300M run
+([`results/gpu_t4_ncu_roofline.txt`](parallel_rng_project/results/gpu_t4_ncu_roofline.txt))
+shows DRAM 76% busy against 43% for the SMs and classifies the kernel as
+memory-bound. That's the same limit as the CPU cluster: Philox's ten rounds
+cost less than storing the result. The profiled build is a slightly simplified
+copy of the kernel with a single launch, so its 7.07 ms duration isn't directly
+comparable to the 9.37 ms average above.
+
+![Random bytes per second across platforms](parallel_rng_project/plots/random_bytes_per_second.png)
+
+For scale, at N = 300M the T4 writes random output about 8.6× faster than the
+best two-node MPI run, and 42× faster than one lab CPU core. These are rates of
+random bytes produced, not speedups of one implementation over another. The
+generators differ (64-bit Threefry on CPU, 32-bit Philox on GPU), the hardware
+differs, and the GPU time is kernel-only: the 1.2 GB result stays in device
+memory, while the CPU programs write to host RAM. The Colab host's own CPU
+manages 1.65 GB/s on one core, about half the lab machine's speed.
 
 The full generated report is in
 [`parallel_rng_project/results/final_analysis.txt`](parallel_rng_project/results/final_analysis.txt).
@@ -119,6 +157,8 @@ cd MPI-PRNGs/parallel_rng_project
 make compile        # baseline, MPI, profiling tools
 make run            # baseline → MPI 1/2/4/8/10 → bandwidth → report → plots
 make run-mpi-4 N=50000000   # any target accepts N= and SEED=
+make run-gpu        # needs nvcc and a CUDA GPU
+python3 plots/generate_gpu_plots.py
 ```
 
 Always run from `parallel_rng_project/`: the programs read and write
