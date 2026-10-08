@@ -66,3 +66,14 @@ vcpkg_installed/
 # test output & cache
 Testing/
 .cache/
+
+# Project build outputs
+parallel_rng_project/baseline/sequential_threefry
+parallel_rng_project/cpu_parallel/mpi_threefry
+parallel_rng_project/gpu_parallel/cuda_philox
+parallel_rng_project/hardware_profiling/bandwidth_test
+parallel_rng_project/hardware_profiling/roofline_analysis
+parallel_rng_project/mpi_appfile
+parallel_rng_project/hostfile
+parallel_rng_project/results/experiment_log.txt
+__pycache__/
