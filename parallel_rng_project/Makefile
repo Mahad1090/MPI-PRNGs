@@ -1,8 +1,4 @@
 # ==============================================================================
-# File: Makefile
-# Project: Parallel Random Number Generation — CS-3006 SP 2026
-# Paper: Salmon et al., Parallel Random Numbers: As Easy as 1,2,3, SC11
-#
 #  make compile              build all CPU targets
 #  make compile-gpu          build CUDA target (needs nvcc)
 #  make run                  run all local experiments in order
@@ -139,7 +135,6 @@ run-mpi-8: $(MPI_BIN) | $(RESULTS_DIR)
 	@echo "  -- MPI Threefry: 8 processes"
 	cd $(ROOT) && $(MPIRUN) --oversubscribe -np 8 $(MPI_BIN) $(N) $(SEED)
 
-# 10 local processes
 run-mpi-10: $(MPI_BIN) | $(RESULTS_DIR)
 	@echo "  -- MPI Threefry: 10 processes"
 	cd $(ROOT) && $(MPIRUN) --oversubscribe -np 10 $(MPI_BIN) $(N) $(SEED)

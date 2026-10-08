@@ -1,28 +1,22 @@
 #!/usr/bin/env python3
 """
-File: generate_plots.py
-Project: Parallel Random Number Generation
-Paper: "Parallel Random Numbers: As Easy as 1,2,3"
-        Salmon et al., SC11, 2011
-Course: CS-3006 Parallel and Distributed Computing
-Purpose: Reads all CSV result files from results/ directory and generates
-         six publication-quality plots saved to the plots/ directory.
-Run:    python3 generate_plots.py
+Builds the plots in this directory from the CSVs in ../results/.
+Plots whose input CSV is missing are skipped, so it is safe to run after a
+partial set of experiments (e.g. no GPU).
+
+Run: python3 generate_plots.py
 """
 
-# ── Standard & Third-Party Imports ───────────────────────────────────────────
 import os
 import sys
 import numpy as np
 import pandas as pd
 import matplotlib
-matplotlib.use("Agg")          # Non-interactive backend for server/headless use
+matplotlib.use("Agg")          # headless: runs over SSH on the lab machines
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 import seaborn as sns
 
-# ── Plot Style Configuration ──────────────────────────────────────────────────
-# Use seaborn's clean whitegrid style for professional appearance
 sns.set_theme(style="whitegrid", font_scale=1.2)
 plt.rcParams.update({
     "font.size":          12,
@@ -37,12 +31,10 @@ plt.rcParams.update({
     "lines.markersize":   8,
 })
 
-# ── Path Constants ────────────────────────────────────────────────────────────
 RESULTS_DIR = os.path.join(os.path.dirname(__file__), "..", "results")
-PLOTS_DIR   = os.path.dirname(__file__)      # save plots in the plots/ folder
+PLOTS_DIR   = os.path.dirname(__file__)
 os.makedirs(PLOTS_DIR, exist_ok=True)
 
-# ── CSV Loading Helpers ───────────────────────────────────────────────────────
 
 def load_csv(filename: str) -> pd.DataFrame | None:
     """Load a CSV from the results directory; return None if missing."""
@@ -66,14 +58,12 @@ def get_scalar(df: pd.DataFrame, column: str, row: int = 0):
     except Exception:
         return None
 
-# ── Load All Data ─────────────────────────────────────────────────────────────
 print("Loading CSV result files...")
 df_baseline  = load_csv("baseline_results.csv")
 df_mpi       = load_csv("mpi_results.csv")
 df_gpu       = load_csv("gpu_results.csv")
 df_hw        = load_csv("hardware_profile.csv")
 
-# ── Derived Quantities ────────────────────────────────────────────────────────
 
 def get_hw_value(hw_df: pd.DataFrame, metric_name: str) -> float | None:
     """Look up a value from the hardware_profile metric→value table."""
@@ -87,16 +77,13 @@ def get_hw_value(hw_df: pd.DataFrame, metric_name: str) -> float | None:
     except Exception:
         return None
 
-# ─────────────────────────────────────────────────────────────────────────────
-# PLOT 1: Speedup vs MPI Process Count
-# ─────────────────────────────────────────────────────────────────────────────
 print("\n[1/6] speedup_vs_processes.png")
 
 if df_mpi is not None and "num_processes" in df_mpi.columns:
     df_mpi_sorted = df_mpi.sort_values("num_processes").drop_duplicates("num_processes")
     process_counts  = df_mpi_sorted["num_processes"].tolist()
     actual_speedups = df_mpi_sorted["speedup"].tolist()
-    ideal_speedups  = process_counts  # ideal linear speedup = process count
+    ideal_speedups  = process_counts
 
     fig, ax = plt.subplots(figsize=(8, 6))
 
@@ -105,7 +92,6 @@ if df_mpi is not None and "num_processes" in df_mpi.columns:
     ax.plot(process_counts, ideal_speedups,
             color="tomato", linestyle="--", marker="s", label="Ideal Linear Speedup")
 
-    # Annotate each actual speedup point
     for xv, yv in zip(process_counts, actual_speedups):
         ax.annotate(f"{yv:.2f}x",
                     xy=(xv, yv),
@@ -128,9 +114,6 @@ if df_mpi is not None and "num_processes" in df_mpi.columns:
 else:
     print("   Skipped — no MPI data available.")
 
-# ─────────────────────────────────────────────────────────────────────────────
-# PLOT 2: Parallel Efficiency vs MPI Process Count
-# ─────────────────────────────────────────────────────────────────────────────
 print("\n[2/6] efficiency_vs_processes.png")
 
 if df_mpi is not None and "num_processes" in df_mpi.columns:
@@ -167,9 +150,6 @@ if df_mpi is not None and "num_processes" in df_mpi.columns:
 else:
     print("   Skipped — no MPI data available.")
 
-# ─────────────────────────────────────────────────────────────────────────────
-# PLOT 3: Throughput vs N (log scale X axis)
-# ─────────────────────────────────────────────────────────────────────────────
 print("\n[3/6] throughput_vs_N.png")
 
 has_any_data = (df_baseline is not None or df_mpi is not None or df_gpu is not None)
@@ -185,7 +165,7 @@ if has_any_data:
                     label="Single Core Threefry (Baseline)")
 
     if df_mpi is not None:
-        # Use the best (highest throughput) MPI run for each N
+        # One point per N: the process count with the highest throughput.
         best_mpi = (df_mpi.sort_values("throughput_GBps", ascending=False)
                           .drop_duplicates("N")
                           .sort_values("N"))
@@ -215,20 +195,16 @@ if has_any_data:
 else:
     print("   Skipped — no throughput data available.")
 
-# ─────────────────────────────────────────────────────────────────────────────
-# PLOT 4: CPU MPI vs GPU Throughput (grouped bar chart)
-# ─────────────────────────────────────────────────────────────────────────────
 print("\n[4/7] cpu_vs_gpu_bar.png")
 
 if df_mpi is not None and df_gpu is not None:
-    # Use the single GPU result N and find the closest MPI N
     gpu_n = int(df_gpu["N"].iloc[0])
     gpu_gbps = float(df_gpu["gpu_parallel_throughput_GBps"].iloc[0])
 
-    # Best MPI throughput at closest N
+    # Prefer MPI runs at the GPU's N; otherwise compare against every MPI run.
     df_mpi_at_n = df_mpi[df_mpi["N"] == gpu_n]
     if df_mpi_at_n.empty:
-        df_mpi_at_n = df_mpi  # fall back to all MPI data
+        df_mpi_at_n = df_mpi
 
     mpi_groups = (df_mpi_at_n.sort_values("num_processes")
                               .drop_duplicates("num_processes"))
@@ -245,7 +221,6 @@ if df_mpi is not None and df_gpu is not None:
     bars_gpu = ax.bar(x + bar_width / 2, [gpu_gbps] * len(labels), bar_width,
                        label="GPU Philox CUDA", color="mediumseagreen")
 
-    # Value labels on top of each bar
     for bar in bars_mpi:
         ax.text(bar.get_x() + bar.get_width() / 2,
                 bar.get_height() + 0.02,
@@ -272,9 +247,6 @@ if df_mpi is not None and df_gpu is not None:
 else:
     print("   Skipped — need both MPI and GPU data.")
 
-# ─────────────────────────────────────────────────────────────────────────────
-# PLOT 5: Roofline Model
-# ─────────────────────────────────────────────────────────────────────────────
 print("\n[5/6] roofline_model.png")
 
 peak_bw    = get_hw_value(df_hw, "peak_copy_bandwidth")
@@ -283,22 +255,20 @@ ridge_pt   = get_hw_value(df_hw, "ridge_point")
 tf_ai      = get_hw_value(df_hw, "threefry_arithmetic_intensity") or 2.5
 philox_ai  = get_hw_value(df_hw, "philox_arithmetic_intensity")   or 1.0
 
-# Fall back to sensible defaults if hardware profile not available
-peak_bw     = peak_bw    or 20.0   # 20 GB/s typical DRAM
-peak_gflops = peak_gflops or 50.0  # 50 GFLOPS typical CPU
+# Placeholder roof when bandwidth_test has not been run; the plot is only
+# illustrative in that case.
+peak_bw     = peak_bw    or 20.0
+peak_gflops = peak_gflops or 50.0
 ridge_pt    = ridge_pt    or (peak_gflops / peak_bw)
 
 fig, ax = plt.subplots(figsize=(10, 7))
 
-# Arithmetic intensity x-axis (log scale)
 ai_range = np.logspace(-3, 3, 500)
 
-# Memory bandwidth roof:  GFLOPS = bandwidth * AI  (capped at compute ceiling)
 bw_roof    = peak_bw * ai_range
 compute_ceil = np.full_like(ai_range, peak_gflops)
 roofline   = np.minimum(bw_roof, compute_ceil)
 
-# Shade regions
 memory_bound_mask  = ai_range <= ridge_pt
 compute_bound_mask = ai_range >= ridge_pt
 
@@ -307,16 +277,13 @@ ax.fill_between(ai_range, roofline, alpha=0.12, color="steelblue",
 ax.fill_between(ai_range, roofline, alpha=0.12, color="mediumseagreen",
                 where=compute_bound_mask, label="Compute-bound region")
 
-# Draw the roofline itself
 ax.loglog(ai_range, roofline,
           color="black", linewidth=2.5, label="Roofline boundary")
 
-# Ridge point vertical line
 ax.axvline(x=ridge_pt, color="dimgray", linestyle=":", linewidth=1.5,
            label=f"Ridge point = {ridge_pt:.2f} FLOP/byte")
 
-# --- Algorithm points ---
-# Single Core Threefry (Baseline)
+# Points are attainable performance from the model, not measured GFLOPS.
 threefry_perf = min(peak_gflops, peak_bw * tf_ai)
 ax.plot(tf_ai, threefry_perf,
         marker="D", color="tomato", markersize=12,
@@ -326,9 +293,9 @@ ax.annotate(f"Baseline\n(Threefry)\n{threefry_perf:.1f} GFLOPS",
             fontsize=10, color="tomato",
             arrowprops=dict(arrowstyle="->", color="tomato"))
 
-# MPI Threefry (Our CPU Contribution) — same AI as single core
-mpi_perf = threefry_perf  # same algorithm, same AI
-ax.plot(tf_ai * 1.05, mpi_perf,  # slight x-offset for visibility
+# MPI runs the same kernel, so it sits on the same point; offset so both show.
+mpi_perf = threefry_perf
+ax.plot(tf_ai * 1.05, mpi_perf,
         marker="s", color="steelblue", markersize=12,
         zorder=5, label=f"MPI Threefry (CPU Parallel)  AI={tf_ai:.1f}")
 ax.annotate(f"MPI Parallel\n(Threefry)\n{mpi_perf:.1f} GFLOPS",
@@ -336,7 +303,6 @@ ax.annotate(f"MPI Parallel\n(Threefry)\n{mpi_perf:.1f} GFLOPS",
             fontsize=10, color="steelblue",
             arrowprops=dict(arrowstyle="->", color="steelblue"))
 
-# GPU Philox (Our GPU Contribution)
 philox_perf = min(peak_gflops, peak_bw * philox_ai)
 ax.plot(philox_ai, philox_perf,
         marker="^", color="mediumseagreen", markersize=12,
@@ -357,9 +323,6 @@ fig.savefig(save_path)
 plt.close(fig)
 print(f"   Saved → {save_path}")
 
-# ─────────────────────────────────────────────────────────────────────────────
-# PLOT 6: GPU Scaling — single thread vs parallel
-# ─────────────────────────────────────────────────────────────────────────────
 print("\n[6/7] gpu_scaling.png")
 
 if df_gpu is not None and "gpu_baseline_throughput_GBps" in df_gpu.columns:
@@ -410,9 +373,6 @@ if df_gpu is not None and "gpu_baseline_throughput_GBps" in df_gpu.columns:
 else:
     print("   Skipped — no GPU baseline data available.")
 
-# ─────────────────────────────────────────────────────────────────────────────
-# PLOT 7: Combined Speedup & Efficiency (dual Y-axis)
-# ─────────────────────────────────────────────────────────────────────────────
 print("\n[7/7] scaling_analysis.png")
 
 if df_mpi is not None and "num_processes" in df_mpi.columns:

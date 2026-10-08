@@ -1,17 +1,12 @@
 /*
- * File: roofline_analysis.cpp
- * Project: Parallel Random Number Generation
- * Paper: "Parallel Random Numbers: As Easy as 1,2,3"
- *         Salmon et al., SC11, 2011
- * Course: CS-3006 Parallel and Distributed Computing
- * Purpose: Reads all experiment CSV files, prints a complete performance
- *          summary table, performs roofline and scaling analysis, and
- *          saves a readable final report to results/final_analysis.txt.
- * Compile: g++ -O2 -std=c++17 -o roofline_analysis roofline_analysis.cpp
- * Run:     ./roofline_analysis
+ * Reads every CSV in results/ and writes the combined summary, utilisation,
+ * roofline and scaling report to results/final_analysis.txt. Missing inputs
+ * are reported as "no data" rather than treated as errors.
+ *
+ * Build: g++ -O2 -std=c++17 -o roofline_analysis roofline_analysis.cpp
+ * Run:   ./roofline_analysis   (from the project root)
  */
 
-// ── Standard Library Includes ─────────────────────────────────────────────────
 #include <iostream>
 #include <fstream>
 #include <sstream>
@@ -24,10 +19,7 @@
 #include <cmath>
 #include <algorithm>
 
-// ── Using Namespace ───────────────────────────────────────────────────────────
 using namespace std;
-
-// ── Data Structures for CSV Results ───────────────────────────────────────────
 
 struct BaselineResult {
     long long total_N           = 0;
@@ -52,7 +44,7 @@ struct GpuResult {
     double    gpu_baseline_throughput_GBps  = 0.0;
     double    gpu_parallel_time_ms          = 0.0;
     double    gpu_parallel_throughput_GBps  = 0.0;
-    double    speedup                       = 0.0;  // gpu_speedup_vs_single_thread
+    double    speedup                       = 0.0;  // GPU parallel vs <<<1, 1>>>
     double    cpu_throughput_GBps           = 0.0;
     bool      loaded                        = false;
 };
@@ -68,15 +60,12 @@ struct HardwareProfile {
     bool   loaded                     = false;
 };
 
-// ── Helper: Trim Whitespace ────────────────────────────────────────────────────
 static string trim_string(const string& input_string) {
     size_t start_pos = input_string.find_first_not_of(" \t\r\n");
     size_t end_pos   = input_string.find_last_not_of(" \t\r\n");
     if (start_pos == string::npos) return "";
     return input_string.substr(start_pos, end_pos - start_pos + 1);
 }
-
-// ── CSV Readers ────────────────────────────────────────────────────────────────
 
 static BaselineResult read_baseline_csv(const string& file_path) {
     BaselineResult result;
@@ -197,7 +186,6 @@ static HardwareProfile read_hardware_profile_csv(const string& file_path) {
     return profile;
 }
 
-// ── Helper: Format Number with Commas ─────────────────────────────────────────
 static string format_N(long long value) {
     string s = to_string(value);
     int pos = static_cast<int>(s.size()) - 3;
@@ -205,14 +193,13 @@ static string format_N(long long value) {
     return s;
 }
 
-// ── Helper: Fixed-Width Column String ─────────────────────────────────────────
+// Pads or truncates to exactly `width` characters.
 static string col(const string& text, int width) {
     if (static_cast<int>(text.size()) >= width)
         return text.substr(0, static_cast<size_t>(width));
     return text + string(static_cast<size_t>(width - static_cast<int>(text.size())), ' ');
 }
 
-// ── Print Performance Summary Table ───────────────────────────────────────────
 static void print_summary_table(const BaselineResult&         baseline,
                                  const vector<MpiResult>& mpi_results,
                                  const GpuResult&              gpu_result,
@@ -271,7 +258,6 @@ static void print_summary_table(const BaselineResult&         baseline,
     output_stream << "╚══════════════════════════════════════════════════════════════════╝\n\n";
 }
 
-// ── Print Hardware Profiles Comparison ───────────────────────────────────────────
 static void print_hardware_profiles(const HardwareProfile& local_hw,
                                      const HardwareProfile& remote_hw,
                                      ostream&               output_stream)
@@ -296,7 +282,8 @@ static void print_hardware_profiles(const HardwareProfile& local_hw,
     print_profile("Remote machine", remote_hw);
 }
 
-// ── Print Hardware Utilisation ─────────────────────────────────────────────────
+// Per-rank throughput as a fraction of the compute ceiling peak_GFLOPS / AI.
+// The utilisation table assumes Threefry is compute-bound on both machines.
 static void print_utilization_analysis(const BaselineResult&    baseline,
                                         const vector<MpiResult>& mpi_results,
                                         const HardwareProfile&   local_hw,
@@ -374,7 +361,6 @@ static void print_utilization_analysis(const BaselineResult&    baseline,
     output_stream << "  Multi-node MPI rows span both machines; per-rank % is approximate.\n\n";
 }
 
-// ── Print Roofline Analysis ────────────────────────────────────────────────────
 static void print_roofline_analysis(const HardwareProfile& hw,
                                      ostream&                output_stream)
 {
@@ -428,7 +414,6 @@ static void print_roofline_analysis(const HardwareProfile& hw,
     output_stream << "    → Thousands of CUDA threads saturate GPU memory bandwidth.\n\n";
 }
 
-// ── Print Scaling Analysis ────────────────────────────────────────────────────
 static void print_scaling_analysis(const vector<MpiResult>& mpi_results,
                                     ostream&                   output_stream)
 {
@@ -474,7 +459,6 @@ static void print_scaling_analysis(const vector<MpiResult>& mpi_results,
     output_stream << "    while the full N does not (cache-size effect).\n\n";
 }
 
-// ── Main ──────────────────────────────────────────────────────────────────────
 int main()
 {
     cout << "==========================================================\n";
@@ -482,7 +466,8 @@ int main()
     cout << "  CS-3006 Parallel and Distributed Computing\n";
     cout << "==========================================================\n\n";
 
-    // ── Read All Result CSV Files ─────────────────────────────────────────────
+    // The *_remote.csv files are pulled from the second machine by
+    // `make remote-bw` and `make run-mpi-remote-only`.
     BaselineResult         baseline      = read_baseline_csv("results/baseline_results.csv");
     vector<MpiResult>      mpi_rows      = read_mpi_csv("results/mpi_results.csv");
     vector<MpiResult>      mpi_remote    = read_mpi_csv("results/mpi_results_remote.csv");
@@ -498,7 +483,6 @@ int main()
     sort_mpi(mpi_rows);
     sort_mpi(mpi_remote);
 
-    // ── Print to Terminal ─────────────────────────────────────────────────────
     print_summary_table(baseline, mpi_rows, gpu_result, cout);
     print_hardware_profiles(hw_local, hw_remote, cout);
 
@@ -518,7 +502,6 @@ int main()
         print_scaling_analysis(mpi_remote, cout);
     }
 
-    // ── Save Full Analysis to Text File ───────────────────────────────────────
     const string results_directory = "results";
     const string report_file_path  = results_directory + "/final_analysis.txt";
 

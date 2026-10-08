@@ -1,17 +1,12 @@
 /*
- * File: bandwidth_test.cpp
- * Project: Parallel Random Number Generation
- * Paper: "Parallel Random Numbers: As Easy as 1,2,3"
- *         Salmon et al., SC11, 2011
- * Course: CS-3006 Parallel and Distributed Computing
- * Purpose: Measures CPU peak memory bandwidth and compute throughput,
- *          then performs roofline arithmetic intensity analysis to classify
- *          Threefry and Mersenne Twister as compute-bound or memory-bound.
- * Compile: g++ -O2 -std=c++17 -o bandwidth_test bandwidth_test.cpp
- * Run:     ./bandwidth_test
+ * Measures host memory bandwidth (read, write, STREAM-style copy) and a scalar
+ * FMA compute ceiling, then places Threefry and Philox on the resulting
+ * roofline. Output goes to results/hardware_profile.csv.
+ *
+ * Build: g++ -O2 -std=c++17 -o bandwidth_test bandwidth_test.cpp
+ * Run:   ./bandwidth_test
  */
 
-// ── Standard Library Includes ─────────────────────────────────────────────────
 #include <iostream>
 #include <fstream>
 #include <vector>
@@ -24,47 +19,29 @@
 #include <algorithm>
 #include <filesystem>
 
-// ── Using Namespace ───────────────────────────────────────────────────────────
 using namespace std;
 
-// ── Constants ─────────────────────────────────────────────────────────────────
-static constexpr size_t ARRAY_SIZE_BYTES      = 512ULL * 1024ULL * 1024ULL; // 512 MB
+static constexpr size_t ARRAY_SIZE_BYTES      = 512ULL * 1024ULL * 1024ULL;
 static constexpr size_t ARRAY_ELEMENT_COUNT   = ARRAY_SIZE_BYTES / sizeof(double);
 static constexpr int    BANDWIDTH_ITERATIONS  = 10;
 static constexpr int    COMPUTE_ITERATIONS    = 10;
-static constexpr long long FMA_LOOP_COUNT     = 500'000'000LL; // 500M FMA ops per iteration
+static constexpr long long FMA_LOOP_COUNT     = 500'000'000LL;
 
-// ── Arithmetic Intensity Analysis (from paper, Salmon et al. SC11 2011) ─────────────
-//
-// Single Core Threefry-4x64-20 (Baseline):
-//   20 rounds × (4 additions + 4 XORs + 4 rotations) = 20 × 12 = 240 operations
-//   Memory: counter (32 B) + key (32 B) + output (32 B) = 96 bytes total
-//   Arithmetic Intensity = 240 / 96 = 2.5 FLOP/byte
-//   State size: ZERO bytes (stateless — key insight of counter-based design)
-//
-// MPI Threefry (Our CPU Contribution):
-//   Same algorithm as single core: AI = 2.5 FLOP/byte
-//   Additional overhead: MPI_Reduce at end only (P doubles total)
-//   Communication is minimal and happens only ONCE after all generation
-//   Near-linear scaling expected because generation is embarrassingly parallel
-//
-// GPU Philox-4x32-10 (Our GPU Contribution):
-//   10 rounds × (2 multiplications + 2 XORs) = 10 × 4 = 40 operations per call
-//   Memory: counter (16 B) + key (8 B) + output (16 B) = 40 bytes total
-//   Arithmetic Intensity = 40 / 40 = 1.0 FLOP/byte
-//   GPU has much higher memory bandwidth → compensates for lower AI
-//   32-bit multiply maps to native GPU hardware units (single-cycle)
+// Operation counts per generator call, treating each integer op as one "FLOP":
+//   Threefry-4x64-20: 20 rounds x (4 add + 4 xor + 4 rotate) = 240 ops,
+//                     32 B counter + 32 B key + 32 B output   =  96 bytes.
+//   Philox-4x32-10:   10 rounds x (2 mul + 2 xor)            =  40 ops,
+//                     16 B counter +  8 B key + 16 B output   =  40 bytes.
 static constexpr double THREEFRY_OPERATIONS_PER_CALL = 240.0;
 static constexpr double THREEFRY_BYTES_PER_CALL       =  96.0;
 static constexpr double THREEFRY_ARITHMETIC_INTENSITY =
-    THREEFRY_OPERATIONS_PER_CALL / THREEFRY_BYTES_PER_CALL;  // = 2.5
+    THREEFRY_OPERATIONS_PER_CALL / THREEFRY_BYTES_PER_CALL;
 
 static constexpr double PHILOX_OPERATIONS_PER_CALL   =  40.0;
 static constexpr double PHILOX_BYTES_PER_CALL         =  40.0;
 static constexpr double PHILOX_ARITHMETIC_INTENSITY  =
-    PHILOX_OPERATIONS_PER_CALL / PHILOX_BYTES_PER_CALL;  // = 1.0
+    PHILOX_OPERATIONS_PER_CALL / PHILOX_BYTES_PER_CALL;
 
-// ── Helper: Timing using chrono ──────────────────────────────────────────────
 static double get_elapsed_seconds(
     const chrono::high_resolution_clock::time_point& start,
     const chrono::high_resolution_clock::time_point& end)
@@ -72,11 +49,8 @@ static double get_elapsed_seconds(
     return chrono::duration<double>(end - start).count();
 }
 
-// ── Read-Only Bandwidth Benchmark ─────────────────────────────────────────────
-// Reads every element of the array and accumulates a sum.
-// The volatile sink prevents the compiler from eliminating the loop.
-// PDC Concept: Memory bandwidth is often the limiting factor for
-// memory-bound algorithms. This measures achievable read bandwidth.
+// Each benchmark reports its fastest iteration.
+
 static double benchmark_read_bandwidth_GBps(const vector<double>& read_array) {
     vector<double> iteration_times(BANDWIDTH_ITERATIONS);
 
@@ -94,7 +68,6 @@ static double benchmark_read_bandwidth_GBps(const vector<double>& read_array) {
         auto time_end = chrono::high_resolution_clock::now();
         iteration_times[iteration] = get_elapsed_seconds(time_start, time_end);
 
-        // Prevent dead-code elimination
         volatile double sink = accumulator;
         (void)sink;
     }
@@ -105,8 +78,6 @@ static double benchmark_read_bandwidth_GBps(const vector<double>& read_array) {
     return static_cast<double>(ARRAY_SIZE_BYTES) / (best_time_seconds * 1.0e9);
 }
 
-// ── Write-Only Bandwidth Benchmark ────────────────────────────────────────────
-// Fills the array with a constant value to measure write bandwidth.
 static double benchmark_write_bandwidth_GBps(vector<double>& write_array) {
     vector<double> iteration_times(BANDWIDTH_ITERATIONS);
 
@@ -130,10 +101,7 @@ static double benchmark_write_bandwidth_GBps(vector<double>& write_array) {
     return static_cast<double>(ARRAY_SIZE_BYTES) / (best_time_seconds * 1.0e9);
 }
 
-// ── Copy Bandwidth Benchmark ──────────────────────────────────────────────────
-// Copies source array to destination array (STREAM Copy benchmark).
-// This is the classic STREAM benchmark that measures DRAM bandwidth.
-// Reads source (512 MB) + writes destination (512 MB) = 1024 MB total.
+// Counts both the read of the source and the write of the destination.
 static double benchmark_copy_bandwidth_GBps(const vector<double>& source_array,
                                              vector<double>&       destination_array)
 {
@@ -159,23 +127,18 @@ static double benchmark_copy_bandwidth_GBps(const vector<double>& source_array,
     double best_time_seconds = *min_element(
         iteration_times.begin(), iteration_times.end());
 
-    // Total bytes = read (512 MB) + write (512 MB)
     double total_bytes_transferred =
         static_cast<double>(ARRAY_SIZE_BYTES) * 2.0;
 
     return total_bytes_transferred / (best_time_seconds * 1.0e9);
 }
 
-// ── Compute Throughput Benchmark ──────────────────────────────────────────────
-// Runs a chain of fused multiply-add (FMA) operations to measure peak GFLOPS.
-// FMA counts as 2 FLOPS (one multiply + one add) per instruction.
-// PDC Concept: Compute ceiling in the roofline model.
+// Four independent multiply-add chains so consecutive FMAs do not wait on each
+// other. Each multiply-add counts as 2 FLOPs.
 static double benchmark_compute_GFLOPS() {
     vector<double> iteration_times(COMPUTE_ITERATIONS);
 
     for (int iteration = 0; iteration < COMPUTE_ITERATIONS; ++iteration) {
-        // Use multiple independent accumulators to expose instruction-level
-        // parallelism (ILP) and keep the FPU pipelines full.
         double acc0 = 1.0, acc1 = 1.0, acc2 = 1.0, acc3 = 1.0;
         const double multiplier = 1.0000001;
         const double addend     = 0.0000001;
@@ -202,13 +165,11 @@ static double benchmark_compute_GFLOPS() {
     double best_time_seconds = *min_element(
         iteration_times.begin(), iteration_times.end());
 
-    // FMA_LOOP_COUNT iterations × 4 accumulators × 2 FLOPS per FMA
     double total_flops = static_cast<double>(FMA_LOOP_COUNT) * 2.0;
 
     return total_flops / (best_time_seconds * 1.0e9);
 }
 
-// ── Main ──────────────────────────────────────────────────────────────────────
 int main()
 {
     cout << "==========================================================\n";
@@ -216,21 +177,16 @@ int main()
     cout << "  CS-3006 Parallel and Distributed Computing\n";
     cout << "==========================================================\n\n";
 
-    // ── Allocate Test Arrays ──────────────────────────────────────────────────
     cout << "  Allocating 2 × " << (ARRAY_SIZE_BYTES / (1024 * 1024))
               << " MB arrays...\n\n";
 
     vector<double> array_source(ARRAY_ELEMENT_COUNT);
     vector<double> array_destination(ARRAY_ELEMENT_COUNT);
 
-    // Initialize source with non-trivial values to prevent compiler folding
+    // Non-constant contents so the read loop cannot be folded at compile time.
     for (size_t idx = 0; idx < ARRAY_ELEMENT_COUNT; ++idx)
         array_source[idx] = static_cast<double>(idx) * 0.000001;
 
-    // ── Run Bandwidth Benchmarks ──────────────────────────────────────────────
-    // PDC Concept: Memory hierarchy — DRAM bandwidth is typically the
-    // bottleneck for memory-bound algorithms. Measuring it lets us place
-    // algorithms correctly on the roofline model.
     cout << "── Memory Bandwidth Benchmarks ──────────────────────────\n";
     cout << "  Running " << BANDWIDTH_ITERATIONS
               << " iterations each, reporting best...\n\n";
@@ -256,13 +212,11 @@ int main()
     cout << " " << fixed << setprecision(2)
               << peak_copy_bandwidth_GBps << " GB/s\n\n";
 
-    // Free arrays to reclaim memory
     array_source.clear();
     array_source.shrink_to_fit();
     array_destination.clear();
     array_destination.shrink_to_fit();
 
-    // ── Run Compute Benchmark ─────────────────────────────────────────────────
     cout << "── Compute Throughput Benchmark ─────────────────────────\n";
     cout << "  Running " << COMPUTE_ITERATIONS
               << " FMA iterations (" << FMA_LOOP_COUNT / 1'000'000LL
@@ -274,17 +228,8 @@ int main()
     cout << "        " << fixed << setprecision(2)
               << peak_compute_GFLOPS << " GFLOPS\n\n";
 
-    // ── Arithmetic Intensity Analysis ─────────────────────────────────────────
-    // PDC Concept: Arithmetic Intensity = FLOPS / Bytes = the ratio of
-    // computation to memory traffic. This determines whether an algorithm
-    // is limited by memory bandwidth or compute throughput.
-
-    // ── Roofline Model ────────────────────────────────────────────────────────
-    // PDC Concept: Roofline Model (Williams et al. 2009)
-    // Performance = min(peak_compute, bandwidth × arithmetic_intensity)
-    //
-    // Ridge point: the arithmetic intensity at which bandwidth roof meets
-    // compute ceiling. Below the ridge → memory-bound. Above → compute-bound.
+    // Roofline (Williams et al. 2009): attainable = min(peak_compute, bandwidth * AI).
+    // Kernels with AI below the ridge point are memory-bound.
     double ridge_point_FLOP_per_byte = peak_compute_GFLOPS /
                                         peak_copy_bandwidth_GBps;
 
@@ -339,7 +284,6 @@ int main()
               << (THREEFRY_ARITHMETIC_INTENSITY > ridge_point_FLOP_per_byte
                   ? "compute-bound" : "memory-bound") << ")\n\n";
 
-    // ── Save Hardware Profile to CSV ──────────────────────────────────────────
     const string results_directory = "results";
     const string csv_file_path     = results_directory + "/hardware_profile.csv";
 
